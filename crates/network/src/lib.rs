@@ -5,7 +5,7 @@ use futures::prelude::*;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{noise, ping, tcp, yamux, Multiaddr};
 use reth_tasks::shutdown::GracefulShutdown;
-use tracing_subscriber::EnvFilter;
+use tracing::{error, info};
 
 pub struct Network {
     dial_addr: Option<String>,
@@ -17,10 +17,6 @@ impl Network {
     }
 
     pub async fn ping(&self) -> Result<(), Box<dyn Error>> {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .try_init();
-
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -49,8 +45,8 @@ impl Network {
         // Start the event loop to drive the swarm.
         loop {
             match swarm.select_next_some().await {
-                SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {address:?}"),
-                SwarmEvent::Behaviour(event) => println!("{event:?}"),
+                SwarmEvent::NewListenAddr { address, .. } => info!("Listening on {address:?}"),
+                SwarmEvent::Behaviour(event) => info!("{event:?}"),
                 _ => {}
             }
         }
@@ -60,12 +56,12 @@ impl Network {
         tokio::select! {
             biased;
             _ = &mut shutdown_signal => {
-                println!("Shutting down Network");
+                info!("Shutting down Network");
                 return;
             }
             result = self.ping() => {
                 if let Err(e) = result {
-                    eprintln!("Network error: {e}");
+                    error!("Network error: {e}");
                 }
             }
         }
