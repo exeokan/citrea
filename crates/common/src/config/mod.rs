@@ -447,6 +447,7 @@ pub struct NetworkConfig {
     /// Optional peer multiaddress.
     pub dial_addr: Option<String>,
     /// Gossipsub configuration.
+    #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
 }
 
