@@ -1,15 +1,14 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    error::Error,
-    hash::{Hash, Hasher},
-    time::Duration,
+    collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, time::Duration
 };
-
+use anyhow::Result;
+use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
 use libp2p::{
     gossipsub, noise,
     swarm::SwarmEvent,
     tcp, yamux, Multiaddr,
+    Swarm, SwarmBuilder,
 };
 use reth_tasks::shutdown::GracefulShutdown;
 use tokio::{io, select};
@@ -17,15 +16,16 @@ use tracing::{error, info};
 
 pub struct Network {
     dial_addr: Option<String>,
+    swarm: Swarm<gossipsub::Behaviour>,
+    test_message_period_secs: Duration,
 }
 
 impl Network {
-    pub fn new(dial_addr: Option<String>) -> Self {
-        Self { dial_addr }
-    }
+    pub fn build(network_config: NetworkConfig) -> Result<Self> {
+        let heartbeat_interval = Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
+        let test_message_period_secs = Duration::from_secs(network_config.gossipsub_config.test_message_period_secs);
 
-    pub async fn gossip(&self) -> Result<(), Box<dyn Error>> {
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        let swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -42,7 +42,7 @@ impl Network {
                 };
                 // Set a custom gossipsub configuration
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+                    .heartbeat_interval(heartbeat_interval) // This is set to aid debugging by not cluttering the log space
                     .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message
                     // signing)
                     .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
@@ -57,6 +57,16 @@ impl Network {
                 Ok(gossipsub)
             })?
             .build();
+
+        Ok(Self { 
+            dial_addr: network_config.dial_addr,
+            swarm,
+            test_message_period_secs,
+        })
+    }
+
+    pub async fn gossip(&mut self) -> Result<()> {
+        let swarm = &mut self.swarm;
 
         // Create a Gossipsub topic
         let topic = gossipsub::IdentTopic::new("test-net");
@@ -76,7 +86,7 @@ impl Network {
         }
 
         // Kick it off
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        let mut interval = tokio::time::interval(self.test_message_period_secs);
         let mut msg_count = 0;
 
         loop {
@@ -110,7 +120,7 @@ impl Network {
         }
     }
 
-    pub async fn run(self, mut shutdown_signal: GracefulShutdown) {
+    pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
         tokio::select! {
             biased;
             _ = &mut shutdown_signal => {
