@@ -12,7 +12,7 @@ resolver = "2"
 
 [dependencies]
 futures = { workspace = true }
-libp2p = { workspace = true, features = ["noise", "ping", "tcp", "tokio", "yamux"] }
+libp2p = { workspace = true, features = [ "tokio", "gossipsub", "noise", "tcp", "yamux", "quic"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 yamux = { workspace = true }
