@@ -24,7 +24,7 @@ impl Network {
         Self { dial_addr }
     }
 
-    pub async fn ping(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn gossip(&self) -> Result<(), Box<dyn Error>> {
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -117,7 +117,7 @@ impl Network {
                 info!("Shutting down Network");
                 return;
             }
-            result = self.ping() => {
+            result = self.gossip() => {
                 if let Err(e) = result {
                     error!("Network error: {e}");
                 }
