@@ -1,15 +1,12 @@
-use std::{
-    collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, time::Duration
-};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::Duration;
+
 use anyhow::Result;
 use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
-use libp2p::{
-    gossipsub, noise,
-    swarm::SwarmEvent,
-    tcp, yamux, Multiaddr,
-    Swarm, SwarmBuilder,
-};
+use libp2p::swarm::SwarmEvent;
+use libp2p::{gossipsub, noise, tcp, yamux, Multiaddr, Swarm, SwarmBuilder};
 use reth_tasks::shutdown::GracefulShutdown;
 use tokio::{io, select};
 use tracing::{error, info};
@@ -22,8 +19,10 @@ pub struct Network {
 
 impl Network {
     pub fn build(network_config: NetworkConfig) -> Result<Self> {
-        let heartbeat_interval = Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
-        let test_message_period_secs = Duration::from_secs(network_config.gossipsub_config.test_message_period_secs);
+        let heartbeat_interval =
+            Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
+        let test_message_period_secs =
+            Duration::from_secs(network_config.gossipsub_config.test_message_period_secs);
 
         let swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -58,7 +57,7 @@ impl Network {
             })?
             .build();
 
-        Ok(Self { 
+        Ok(Self {
             dial_addr: network_config.dial_addr,
             swarm,
             test_message_period_secs,
@@ -125,7 +124,6 @@ impl Network {
             biased;
             _ = &mut shutdown_signal => {
                 info!("Shutting down Network");
-                return;
             }
             result = self.gossip() => {
                 if let Err(e) = result {

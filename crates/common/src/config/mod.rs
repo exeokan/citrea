@@ -466,7 +466,7 @@ impl Default for GossipsubConfig {
     fn default() -> Self {
         Self {
             heartbeat_interval_secs: default_heartbeat_interval_secs(),
-            test_message_period_secs: default_test_message_period_secs()
+            test_message_period_secs: default_test_message_period_secs(),
         }
     }
 }
@@ -481,7 +481,10 @@ impl FromEnv for GossipsubConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(default_test_message_period_secs);
-        Ok(Self { heartbeat_interval_secs, test_message_period_secs })
+        Ok(Self {
+            heartbeat_interval_secs,
+            test_message_period_secs,
+        })
     }
 }
 
@@ -489,7 +492,10 @@ impl FromEnv for NetworkConfig {
     fn from_env() -> anyhow::Result<Self> {
         let dial_addr = read_env("NETWORK_DIAL_ADDR").ok();
         let gossipsub_config = GossipsubConfig::from_env()?;
-        Ok(Self { dial_addr, gossipsub_config })
+        Ok(Self {
+            dial_addr,
+            gossipsub_config,
+        })
     }
 }
 
