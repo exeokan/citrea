@@ -59,9 +59,11 @@ impl Network {
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub_config,
                 )?;
-                let mdns =
-                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
-            
+                let mdns = mdns::tokio::Behaviour::new(
+                    mdns::Config::default(),
+                    key.public().to_peer_id(),
+                )?;
+
                 Ok(MyBehaviour { gossipsub, mdns })
             })?
             .build();
@@ -90,7 +92,7 @@ impl Network {
         if let Some(addr) = self.dial_addr.as_ref() {
             let remote: Multiaddr = addr.parse()?;
             swarm.dial(remote)?;
-            println!("Dialed {addr}")
+            info!("Dialed {addr}");
         }
 
         // Kick it off
