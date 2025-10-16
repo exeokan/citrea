@@ -102,7 +102,7 @@ impl Network {
         loop {
             select! {
                 _ = interval.tick() => {
-                    let test_message = format!("test {}", msg_count);
+                    let test_message = format!("peer {} test {}", swarm.local_peer_id(), msg_count);
                     if let Err(e) = swarm
                         .behaviour_mut()
                         .gossipsub
