@@ -124,7 +124,7 @@ use anyhow::Result;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
 use citrea_common::{InitParams, NetworkConfig, RollupPublicKeys, RunnerConfig};
-use citrea_network::Network as CitreaNetwork;
+use citrea_network::NetworkService;
 use citrea_stf::runtime::CitreaRuntime;
 use citrea_storage_ops::pruning::{Pruner, PrunerService};
 use da_block_handler::L1BlockHandler;
@@ -139,7 +139,7 @@ use sov_prover_storage_manager::ProverStorageManager;
 use sov_rollup_interface::services::da::DaService;
 use sov_rollup_interface::zk::ZkvmHost;
 use sov_rollup_interface::Network;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 /// Module for handling L1 data availability blocks
 pub mod da_block_handler;
@@ -207,7 +207,7 @@ pub fn build_services<DA, DB, Vm>(
     L1BlockHandler<Vm, DA, DB>,
     Option<PrunerService>,
     RpcModule<()>,
-    CitreaNetwork,
+    NetworkService<DB>,
 )>
 where
     DA: DaService,
@@ -230,6 +230,7 @@ where
     });
 
     let include_tx_bodies = runner_config.include_tx_body;
+    
     let l2_syncer = L2Syncer::new(
         runner_config,
         init_params,
@@ -246,7 +247,7 @@ where
 
     let l1_block_handler = L1BlockHandler::new(
         network,
-        ledger_db,
+        ledger_db.clone(),
         da_service,
         public_keys.sequencer_da_pub_key,
         public_keys.prover_da_pub_key,
@@ -254,7 +255,16 @@ where
         Arc::new(Mutex::new(L1BlockCache::new())),
         backup_manager,
     );
-    let citrea_network = CitreaNetwork::build(network_config)?;
+
+    // TODO pass request tx to L2Syncer
+    let (_request_tx, request_rx) = mpsc::channel(100);
+
+    let citrea_network = NetworkService::build(
+        network_config,
+        ledger_db,
+        request_rx,
+        None // TODO: share this channel with L2Syncer
+    )?;
     Ok((
         l2_syncer,
         l1_block_handler,
