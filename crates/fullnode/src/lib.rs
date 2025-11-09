@@ -230,7 +230,7 @@ where
     });
 
     let include_tx_bodies = runner_config.include_tx_body;
-    
+
     let l2_syncer = L2Syncer::new(
         runner_config,
         init_params,
@@ -263,7 +263,7 @@ where
         network_config,
         ledger_db,
         request_rx,
-        None // TODO: share this channel with L2Syncer
+        None, // TODO: share this channel with L2Syncer
     )?;
     Ok((
         l2_syncer,

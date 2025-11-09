@@ -1,17 +1,18 @@
+use anyhow::{Context, Result};
 use citrea_common::NetworkConfig;
 use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::SharedLedgerOps;
 use sov_db::schema::types::l2_block::StoredL2Block;
+use sov_db::schema::types::L2BlockNumber;
 use tokio::sync::mpsc;
 use tracing::info;
-use anyhow::{Context, Result};
-use sov_db::schema::types::L2BlockNumber;
 
-use crate::types::{L2SyncMessage, NetworkRequest, PeerStatus, NetworkEvent}; 
+use crate::types::{L2SyncMessage, NetworkEvent, NetworkRequest, PeerStatus};
 use crate::Network;
 
-pub struct NetworkService<DB> 
-    where DB: SharedLedgerOps
+pub struct NetworkService<DB>
+where
+    DB: SharedLedgerOps,
 {
     network: Network,
     ledger_db: DB,
@@ -32,7 +33,8 @@ where
     ) -> Result<Self> {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
 
-        let network = Network::build(network_config, event_tx).context("Failed to build network")?;
+        let network =
+            Network::build(network_config, event_tx).context("Failed to build network")?;
         Ok(Self {
             network,
             ledger_db,
@@ -44,9 +46,7 @@ where
 
     pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
         let cloned_signal = shutdown_signal.clone();
-        tokio::spawn(async move {
-            self.network.run(cloned_signal).await
-        });
+        tokio::spawn(async move { self.network.run(cloned_signal).await });
 
         loop {
             tokio::select! {
@@ -67,13 +67,17 @@ where
     // TODO: Fix error/response type
     pub async fn l2_blocks_by_range(&self, start: u64, end: u64) -> Result<Vec<StoredL2Block>> {
         if end < start {
-            return Err(anyhow::anyhow!("End block number must be greater than or equal to start block number"));
+            return Err(anyhow::anyhow!(
+                "End block number must be greater than or equal to start block number"
+            ));
         }
         let diff = end - start;
 
         // TODO: Make this configurable
         if diff > 1000 {
-            return Err(anyhow::anyhow!("Requested block range too large. Max range is 1000 blocks"));
+            return Err(anyhow::anyhow!(
+                "Requested block range too large. Max range is 1000 blocks"
+            ));
         }
 
         // TODO: handle the case where the full node doesnt save transactions

@@ -1,19 +1,19 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
+
 use anyhow::Result;
 use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{gossipsub, mdns, noise, tcp, yamux, Multiaddr, Swarm, SwarmBuilder};
 use reth_tasks::shutdown::GracefulShutdown;
+pub use service::NetworkService;
+use tokio::sync::mpsc;
 use tokio::{io, select};
 use tracing::{error, info};
-use tokio::sync::mpsc;
 
 use crate::types::NetworkEvent;
-
-pub use service::NetworkService;
 pub mod service;
 pub mod types;
 
