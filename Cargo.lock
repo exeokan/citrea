@@ -2706,8 +2706,6 @@ dependencies = [
  "libp2p",
  "reth-tasks",
  "sov-db",
- "sov-modules-api",
- "sov-rollup-interface",
  "tokio",
  "tracing",
  "yamux 0.13.4",
