@@ -257,7 +257,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
         FullNodeL1BlockHandler<Self::Vm, Self::DaService, LedgerDB>,
         Option<PrunerService>,
         RpcModule<()>,
-        NetworkService<LedgerDB>,
+        NetworkService,
     )> {
         let runner_config = rollup_config.runner.expect("Runner config is missing");
 

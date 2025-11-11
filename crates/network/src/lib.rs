@@ -1,42 +1,48 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
+use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{gossipsub, mdns, noise, tcp, yamux, Multiaddr, Swarm, SwarmBuilder};
-use reth_tasks::shutdown::GracefulShutdown;
+use libp2p::{gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 pub use service::NetworkService;
-use tokio::sync::mpsc;
 use tokio::{io, select};
 use tracing::{error, info};
 
+use crate::rpc::Eth2Request;
 use crate::types::NetworkEvent;
 pub mod service;
 pub mod types;
+mod rpc;
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    eth2_rpc: rpc::Eth2Behaviour,
+}
+
+struct OutboundRequest{
+    peer_id: PeerId,
+    timestamp: Instant,
 }
 
 struct Network {
-    dial_addr: Option<String>,
     swarm: Swarm<MyBehaviour>,
-    test_message_period_secs: Duration,
+    pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<rpc::Eth2Response>>,
+    pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>,
 }
 
 impl Network {
-    fn build(network_config: NetworkConfig, _event_tx: mpsc::Sender<NetworkEvent>) -> Result<Self> {
+    fn build(network_config: NetworkConfig) -> Result<Self> {
         let heartbeat_interval =
             Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
-        let test_message_period_secs =
-            Duration::from_secs(network_config.gossipsub_config.test_message_period_secs);
 
-        let swarm = SwarmBuilder::with_new_identity()
+        let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -70,19 +76,9 @@ impl Network {
                     key.public().to_peer_id(),
                 )?;
 
-                Ok(MyBehaviour { gossipsub, mdns })
+                Ok(MyBehaviour { gossipsub, mdns, eth2_rpc: rpc::create_eth2_behaviour() })
             })?
             .build();
-
-        Ok(Self {
-            dial_addr: network_config.dial_addr,
-            swarm,
-            test_message_period_secs,
-        })
-    }
-
-    pub async fn gossip(&mut self) -> Result<()> {
-        let swarm = &mut self.swarm;
 
         // Create a Gossipsub topic
         let topic = gossipsub::IdentTopic::new("test-net");
@@ -93,38 +89,36 @@ impl Network {
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+        let dial_addr = network_config.dial_addr;
         // Dial the peer identified by the multi-address given as the second
         // command-line argument, if any.
-        if let Some(addr) = self.dial_addr.as_ref() {
+        if let Some(addr) = dial_addr.as_ref() {
             let remote: Multiaddr = addr.parse()?;
             swarm.dial(remote)?;
             info!("Dialed {addr}");
         }
 
-        // Kick it off
-        let mut interval = tokio::time::interval(self.test_message_period_secs);
-        let mut msg_count = 0;
+        Ok(Self {
+            swarm,
+            pending_inbound_requests: HashMap::new(),
+            pending_outbound_requests: HashMap::new(),
+        })
+    }
+
+    pub async fn next_event(&mut self) -> Result<NetworkEvent> {
+        let swarm = &mut self.swarm;
 
         loop {
             select! {
-                _ = interval.tick() => {
-                    let test_message = format!("peer {} test {}", swarm.local_peer_id(), msg_count);
-                    if let Err(e) = swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .publish(topic.clone(), test_message.as_bytes()) {
-                        error!("Publish error: {e:?}");
-                    } else {
-                        info!("Published message with idx: {}", msg_count);
-                    }
-                    msg_count += 1;
-                }
                 event = swarm.select_next_some() => match event {
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                        let mut ids = vec![];
                         for (peer_id, _multiaddr) in list {
                             info!("mDNS discovered a new peer: {peer_id}");
                             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                            ids.push(peer_id);
                         }
+                        return Ok(NetworkEvent::NewPeers(ids));
                     },
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                         for (peer_id, _multiaddr) in list {
@@ -140,6 +134,28 @@ impl Network {
                             "Got message: '{}' with id: {id} from peer: {peer_id}",
                             String::from_utf8_lossy(&message.data),
                         ),
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(request_response::Event::Message {peer, message, .. })) => {
+                        match message {
+                            request_response::Message::Request { request_id, request, channel } => {
+                                self.pending_inbound_requests.insert(request_id, channel);
+                                // send the request to the upper layer, which will call send_rpc_response once ready
+                                // TODO: consider using peer_id here
+                                return Ok(NetworkEvent::RequestReceived {
+                                    request_id,
+                                    request,
+                                });
+                            },
+                            request_response::Message::Response { request_id, response } => {
+                                self.pending_outbound_requests.remove(&request_id);
+                                return Ok(NetworkEvent::ResponseReceived {
+                                    peer_id: peer,
+                                    response,
+                                });
+                            }
+                        }
+                    }
+                    // TODO handle other eth2rpc events
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Local node is listening on {address}");
                     }
@@ -149,17 +165,49 @@ impl Network {
         }
     }
 
-    pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown_signal => {
-                info!("Shutting down Network");
-            }
-            result = self.gossip() => {
-                if let Err(e) = result {
-                    error!("Network error: {e}");
+    pub fn send_rpc_request(&mut self, peer_id: Option<PeerId>, request: Eth2Request) {
+        // REMOVE ME: for testing only
+        let peer_id = if let Some(peer_id) = peer_id {
+            peer_id
+        } else {
+            // pick a random peer from the connected peers
+            match self.swarm.connected_peers().next() {
+                Some(p) => p.to_owned(),
+                None => {
+                    error!("No connected peers to send RPC request");
+                    return;
                 }
             }
-        }
+        };
+
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .eth2_rpc
+            .send_request(&peer_id, request);
+
+        let timestamp = Instant::now();
+        let outbound_request = OutboundRequest {
+            peer_id,
+            timestamp,
+        };
+        self.pending_outbound_requests.insert(request_id, outbound_request);
+    }
+
+    // TODO: what happens when the response is too large?
+    pub fn send_rpc_response(&mut self, request_id: InboundRequestId, response: rpc::Eth2Response) -> anyhow::Result<()> {
+        let channel = self.pending_inbound_requests
+            .remove(&request_id)
+            .ok_or_else(|| anyhow::anyhow!("No pending inbound request found for the given request ID"))?;
+
+        if let Err(failed_response) = self
+            .swarm
+            .behaviour_mut()
+            .eth2_rpc
+            .send_response(channel, response) {
+            // TODO: handle this error
+            error!("Failed to send status response: {:?}", failed_response);
+        };
+        Ok(())
     }
 }

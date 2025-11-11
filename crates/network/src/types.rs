@@ -1,3 +1,7 @@
+use libp2p::{request_response::InboundRequestId, PeerId};
+
+use crate::rpc::{Eth2Request, Eth2Response};
+
 pub enum NetworkRequest {
     PublishMessage { topic: String, message: Vec<u8> },
     AddPeer { peer_id: String },
@@ -17,12 +21,17 @@ pub enum L2SyncMessage {
     PeerStatus(PeerStatus),
 }
 
-#[allow(dead_code)] // TODO: remove when used
 pub(crate) enum NetworkEvent {
     GossipBlock,
-    RpcResponse,
-    RpcRequest,
-    NewPeer(String),
-    DisconnectPeer(String),
+    RequestReceived {
+        request_id: InboundRequestId,
+        request: Eth2Request,
+    },
+    ResponseReceived {
+        peer_id: PeerId,
+        response: Eth2Response,
+    },
+    NewPeers(Vec<PeerId>),
+    DisconnectPeer(PeerId),
     PeerStatus(PeerStatus),
 }

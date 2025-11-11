@@ -130,7 +130,8 @@ use citrea_storage_ops::pruning::{Pruner, PrunerService};
 use da_block_handler::L1BlockHandler;
 use jsonrpsee::RpcModule;
 pub use l2_syncer::L2Syncer;
-use sov_db::ledger_db::NodeLedgerOps;
+use sov_db::ledger_db::LedgerDB;
+use sov_db::ledger_db::SharedLedgerOps;
 use sov_modules_api::default_context::DefaultContext;
 use sov_modules_api::fork::ForkManager;
 use sov_modules_api::{SpecId, Zkvm};
@@ -183,7 +184,7 @@ pub mod rpc;
 /// - Optional PrunerService for historical data pruning
 /// - Configured RPC module
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub fn build_services<DA, DB, Vm>(
+pub fn build_services<DA, Vm>(
     network: Network,
     runner_config: RunnerConfig,
     network_config: NetworkConfig,
@@ -195,7 +196,7 @@ pub fn build_services<DA, DB, Vm>(
     >,
     public_keys: RollupPublicKeys,
     da_service: Arc<DA>,
-    ledger_db: DB,
+    ledger_db: LedgerDB,
     storage_manager: ProverStorageManager,
     l2_block_tx: broadcast::Sender<u64>,
     fork_manager: ForkManager<'static>,
@@ -203,15 +204,14 @@ pub fn build_services<DA, DB, Vm>(
     rpc_module: RpcModule<()>,
     backup_manager: Arc<BackupManager>,
 ) -> Result<(
-    L2Syncer<DA, DB>,
-    L1BlockHandler<Vm, DA, DB>,
+    L2Syncer<DA, LedgerDB>,
+    L1BlockHandler<Vm, DA, LedgerDB>,
     Option<PrunerService>,
     RpcModule<()>,
-    NetworkService<DB>,
+    NetworkService,
 )>
 where
     DA: DaService,
-    DB: NodeLedgerOps + Send + Sync + Clone + 'static,
     Vm: ZkvmHost + Zkvm,
 {
     let rpc_context = rpc::create_rpc_context(ledger_db.clone());
