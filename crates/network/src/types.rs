@@ -1,6 +1,30 @@
 use libp2p::{request_response::InboundRequestId, PeerId};
+use serde::{Deserialize, Serialize};
+use sov_rollup_interface::rpc::block::L2BlockResponse;
 
-use crate::rpc::{Eth2Request, Eth2Response};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BlocksByRangeRequest {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum Eth2Request {
+    Status,
+    BlocksByRange(BlocksByRangeRequest),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusResponse {
+    pub head_block: u64,
+    pub last_pruned_block: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum Eth2Response {
+    Status(StatusResponse),
+    BlocksByRange(Vec<L2BlockResponse>),
+}
 
 pub enum NetworkRequest {
     PublishMessage { topic: String, message: Vec<u8> },
@@ -11,16 +35,15 @@ pub enum NetworkRequest {
     GetPeerStatus { peer_id: String },
 }
 
-pub struct PeerStatus;
-
 pub enum L2SyncMessage {
     GossipBlock,
     BlockBatch(Vec<()>),
-    NewPeer(String),
-    DisconnectPeer(String),
-    PeerStatus(PeerStatus),
+    NewPeer(PeerId),
+    DisconnectPeer(PeerId),
+    PeerStatus(StatusResponse),
 }
 
+#[allow(dead_code)] // TODO: remove when all events are handled
 pub(crate) enum NetworkEvent {
     GossipBlock,
     RequestReceived {
@@ -33,5 +56,4 @@ pub(crate) enum NetworkEvent {
     },
     NewPeers(Vec<PeerId>),
     DisconnectPeer(PeerId),
-    PeerStatus(PeerStatus),
 }

@@ -13,8 +13,7 @@ pub use service::NetworkService;
 use tokio::{io, select};
 use tracing::{error, info};
 
-use crate::rpc::Eth2Request;
-use crate::types::NetworkEvent;
+use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
 pub mod service;
 pub mod types;
 mod rpc;
@@ -26,6 +25,7 @@ struct MyBehaviour {
     eth2_rpc: rpc::Eth2Behaviour,
 }
 
+#[allow(dead_code)] // TODO: remove when periodic check on outbound requests is implemented
 struct OutboundRequest{
     peer_id: PeerId,
     timestamp: Instant,
@@ -33,7 +33,7 @@ struct OutboundRequest{
 
 struct Network {
     swarm: Swarm<MyBehaviour>,
-    pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<rpc::Eth2Response>>,
+    pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>,
 }
 
@@ -195,7 +195,7 @@ impl Network {
     }
 
     // TODO: what happens when the response is too large?
-    pub fn send_rpc_response(&mut self, request_id: InboundRequestId, response: rpc::Eth2Response) -> anyhow::Result<()> {
+    pub fn send_rpc_response(&mut self, request_id: InboundRequestId, response: Eth2Response) -> anyhow::Result<()> {
         let channel = self.pending_inbound_requests
             .remove(&request_id)
             .ok_or_else(|| anyhow::anyhow!("No pending inbound request found for the given request ID"))?;

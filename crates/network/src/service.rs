@@ -8,8 +8,8 @@ use sov_rollup_interface::rpc::LedgerRpcProvider;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::rpc::{Eth2Request, Eth2Response, StatusResponse};
-use crate::types::{L2SyncMessage, NetworkEvent, NetworkRequest, PeerStatus};
+use crate::types::{BlocksByRangeRequest, Eth2Request, Eth2Response, StatusResponse};
+use crate::types::{L2SyncMessage, NetworkEvent, NetworkRequest};
 use crate::Network;
 
 pub struct NetworkService
@@ -82,7 +82,7 @@ impl NetworkService {
                 }
                 _ = rpc_request_interval.tick() => {
                     self.network.send_rpc_request(None, Eth2Request::BlocksByRange(
-                        crate::rpc::BlocksByRangeRequest {
+                        BlocksByRangeRequest {
                             start: 1,
                             end: 3,
                         }
@@ -113,32 +113,28 @@ impl NetworkService {
                 }))
             }
             Eth2Request::BlocksByRange(blocks_request) => {
-                let blocks = Self::l2_blocks_by_range(ledger_db, blocks_request.start, blocks_request.end)?;
+                let blocks = l2_blocks_by_range(ledger_db, blocks_request.start, blocks_request.end)?;
                 Ok(Eth2Response::BlocksByRange(blocks))
             }
         }
     }
+}
 
-    // TODO: Fix error/response type
-    pub fn l2_blocks_by_range(ledger_db: &LedgerDB, start: u64, end: u64) -> Result<Vec<L2BlockResponse>> {
-        let diff = end - start;
+// TODO: Fix error/response type
+pub fn l2_blocks_by_range(ledger_db: &LedgerDB, start: u64, end: u64) -> Result<Vec<L2BlockResponse>> {
+    let diff = end - start;
 
-        // TODO: Make this configurable
-        if diff > 1000 {
-            return Err(anyhow::anyhow!(
-                "Requested block range too large. Max range is 1000 blocks"
-            ));
-        }
-
-        ledger_db.get_l2_blocks_range(start, end)?
-            .into_iter()
-            .map(|block_opt| {
-                block_opt.ok_or_else(|| anyhow::anyhow!("Block not found"))
-            })
-            .collect()
+    // TODO: Make this configurable
+    if diff > 1000 {
+        return Err(anyhow::anyhow!(
+            "Requested block range too large. Max range is 1000 blocks"
+        ));
     }
 
-    pub async fn peer_status(&self) -> Result<PeerStatus> {
-        unimplemented!()
-    }
+    ledger_db.get_l2_blocks_range(start, end)?
+        .into_iter()
+        .map(|block_opt| {
+            block_opt.ok_or_else(|| anyhow::anyhow!("Block not found"))
+        })
+        .collect()
 }

@@ -1,32 +1,8 @@
 use libp2p::{
     request_response::{self, ProtocolSupport}, StreamProtocol,
 };
-use serde::{Deserialize, Serialize};
-use sov_rollup_interface::rpc::block::L2BlockResponse;
+use crate::types::{Eth2Request, Eth2Response};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BlocksByRangeRequest {
-    pub start: u64,
-    pub end: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum Eth2Request {
-    Status,
-    BlocksByRange(BlocksByRangeRequest),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct StatusResponse {
-    pub head_block: u64,
-    pub last_pruned_block: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum Eth2Response {
-    Status(StatusResponse),
-    BlocksByRange(Vec<L2BlockResponse>),
-}
 
 // 2. Create the behaviour using built-in JSON codec
 // TODO: consider cbor codec
