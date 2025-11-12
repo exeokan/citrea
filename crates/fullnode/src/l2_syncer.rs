@@ -180,7 +180,8 @@ where
     async fn process_l2_block(
         &mut self,
         l2_block_response: &L2BlockResponse,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<()> { // TODO: return custom error, slash depending on it, 
+        // and continue exponential backoff depending on error type
         let _l2_lock = self.backup_manager.start_l2_processing().await; // TODO: is this safe?
         let start = std::time::Instant::now();
 
@@ -226,7 +227,7 @@ where
         event: L2SyncMessage,
         manager_tx: &mpsc::Sender<SyncManagerMessage>,
     ) {
-        // TODO: propagate error
+        // TODO: propagate errors
         match event {
             L2SyncMessage::BlockBatch(peer_id, l2_blocks) => {
                 let start_height = l2_blocks
@@ -243,22 +244,12 @@ where
                     .to();
 
                 // While syncing, we'd like to process L2 blocks as they come without any delays.
-                for l2_block in l2_blocks {
-                    let mut backoff = ExponentialBackoff::default();
-                    loop {
-                        let result = self.process_l2_block(&l2_block).await;
-                        match result {
-                            Ok(_) => break,
-                            Err(e) => {
-                                error!(
-                                    "Failed to process L2 block {}: {}",
-                                    l2_block.header.height, e
-                                );
-                                let backoff_duration = backoff.next_backoff().expect("Failed to process L2 block multiple times. Killing L2Syncer...");
-                                tokio::time::sleep(backoff_duration).await;
-                            }
-                        }
-                    }
+                if let Err(e) = self.process_l2_blocks_with_backoff(l2_blocks).await {
+                    error!(
+                        "Failed to process L2 block batch from peer {}: {}",
+                        peer_id, e
+                    );
+                    return;
                 }
                 // TODO: Either penalize here or in the sync manager
                 manager_tx
@@ -281,7 +272,56 @@ where
                     .await
                     .expect("SyncManager receiver dropped");
             }
+            L2SyncMessage::GossipBlock(_peer_id, block) => {
+                let height: u64 = block.header.height.to();
+                let head_height = self
+                    .ledger_db
+                    .get_head_l2_block_height()
+                    .expect("DB error")
+                    .unwrap_or(0);
+
+                // TODO: perform more checks here regarding the block, even if we can't process it fully
+                // TODO: research propagating gossiped blocks further
+                if height == head_height + 1 {
+                    if let Err(e) = self.process_l2_blocks_with_backoff(vec![block]).await {
+                        error!(
+                            "Failed to process gossiped L2 block at height {}: {}",
+                            height, e
+                        );
+                    }
+                } else {
+                    info!(
+                        "Ignoring gossiped L2 block at height {}: current head is {}",
+                        height, head_height
+                    );
+                }
+                
+            }
             _ => unimplemented!("Other L2SyncMessage variants are not implemented yet"),
         }
+    }
+
+    pub async fn process_l2_blocks_with_backoff(
+        &mut self,
+        l2_blocks: Vec<L2BlockResponse>,
+    ) -> anyhow::Result<()> {
+        for l2_block in l2_blocks {
+            let mut backoff = ExponentialBackoff::default();
+            loop {
+                let result = self.process_l2_block(&l2_block).await;
+                match result {
+                    Ok(_) => break,
+                    Err(e) => {
+                        error!(
+                            "Failed to process L2 block {}: {}",
+                            l2_block.header.height, e
+                        );
+                        let backoff_duration = backoff.next_backoff().expect("Failed to process L2 block multiple times. Killing L2Syncer...");
+                        tokio::time::sleep(backoff_duration).await;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

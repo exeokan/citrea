@@ -69,6 +69,12 @@ impl NetworkService {
                                 }
                             }
                         }
+                        NetworkEvent::GossipBlock(peer_id, block) => {
+                            let message = L2SyncMessage::GossipBlock(peer_id, block);
+                            if let Err(e) = self.send_l2_sync_message(message) {
+                                error!("Failed to notify L2 syncer of gossiped block from peer {}: {:?}", peer_id, e);
+                            }
+                        }
                         _ => {
                             info!("Received other network event");
                         }
@@ -97,8 +103,8 @@ impl NetworkService {
 
     fn on_network_request(&mut self, request: NetworkRequest) {
         match request {
-            NetworkRequest::PublishMessage { .. } => {
-                unimplemented!();
+            NetworkRequest::PublishMessage { topic, message } => {
+                self.network.publish_message(&topic, message);
             }
             NetworkRequest::AddPeer(_peer_id) => {
                 unimplemented!();

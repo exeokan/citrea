@@ -61,8 +61,8 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
+use sov_rollup_interface::rpc::LedgerRpcProvider;
 
-// use sov_rollup_interface::rpc::LedgerRpcProvider;
 use crate::commitment::service::CommitmentService;
 use crate::da::{da_block_monitor, get_da_block_data};
 use crate::db_provider::DbProvider;
@@ -121,6 +121,8 @@ where
     backup_manager: Arc<BackupManager>,
     /// Channel for sending canonical state notifications to mempool maintenance
     canon_state_tx: mpsc::UnboundedSender<CanonStateNotification>,
+    /// Channel for sending network requests
+    network_tx: mpsc::Sender<NetworkRequest>,
 }
 
 impl<Da> CitreaSequencer<Da>
@@ -161,7 +163,7 @@ where
         backup_manager: Arc<BackupManager>,
         rpc_message_rx: UnboundedReceiver<SequencerRpcMessage>,
         canon_state_tx: mpsc::UnboundedSender<CanonStateNotification>,
-        _network_tx: mpsc::Sender<NetworkRequest>,
+        network_tx: mpsc::Sender<NetworkRequest>,
     ) -> anyhow::Result<Self> {
         let sov_tx_signer_priv_key =
             K256PrivateKey::try_from(hex::decode(&config.private_key)?.as_slice())?;
@@ -184,6 +186,7 @@ where
             l2_block_tx,
             backup_manager,
             canon_state_tx,
+            network_tx,
         })
     }
 
@@ -452,13 +455,21 @@ where
                 if let Err(_closed) = self.l2_block_tx.send(l2_height) {
                     debug!("l2_block_tx is closed");
                 }
-                // TODO: publish the L2 block to the network
 
-                // let l2_block = LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
-                // let network_request = NetworkRequest::PublishMessage {
-                //     topic: "l2_blocks".to_string(),
-                //     message: l2_block.serialize(serializer)
-                // };
+                let l2_block = LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
+                // serde serialization
+                // TODO: consider using a more efficient serialization method
+                let serialized_block = serde_json::to_vec(&l2_block)
+                    .map_err(|e| anyhow!("Failed to serialize L2 block: {}", e))?;
+                let network_request = NetworkRequest::PublishMessage {
+                    topic: "new-head".to_string(),
+                    message: serialized_block
+                };
+                // TODO: what if the channel is full?
+                // consider using tokio spawn here
+                self.network_tx
+                    .send(network_request)
+                    .await.expect("Failed to send network request");
             }
             Err(e) => {
                 error!("Sequencer error: {}", e);

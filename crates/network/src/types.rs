@@ -55,7 +55,7 @@ pub enum L2SyncMessage {
 
 #[allow(dead_code)] // TODO: remove when all events are handled
 pub(crate) enum NetworkEvent {
-    GossipBlock,
+    GossipBlock(PeerId, L2BlockResponse),
     RequestReceived {
         request_id: InboundRequestId,
         request: Eth2Request,

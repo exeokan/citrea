@@ -12,8 +12,10 @@ use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 pub use service::NetworkService;
+use sov_rollup_interface::rpc::block::L2BlockResponse;
 use tokio::{io, select};
 use tracing::{error, info};
+use gossipsub::Message as GossipsubMessage;
 
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
 mod rpc;
@@ -87,7 +89,7 @@ impl Network {
             .build();
 
         // Create a Gossipsub topic
-        let topic = gossipsub::IdentTopic::new("test-net");
+        let topic = gossipsub::IdentTopic::new("new-head");
         // subscribes to our topic
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
@@ -134,12 +136,22 @@ impl Network {
                     },
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                         propagation_source: peer_id,
-                        message_id: id,
+                        message_id: _id,
                         message,
-                    })) => info!(
-                            "Got message: '{}' with id: {id} from peer: {peer_id}",
-                            String::from_utf8_lossy(&message.data),
-                        ),
+                    })) => {
+                        // TODO: research gossipsub broadcast guarentees
+                        // TODO: who to slash for bad messages, propagation source or the original sender?
+                        let GossipsubMessage { data, .. } = message; // TODO: consider handling topic/peer_id/sequence_number
+                        // try to deserialize the message to L2BlockResponse using serde
+                        let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Failed to deserialize gossipsub message from peer {peer_id}: {e:?}");
+                                continue;
+                            }
+                        };
+                        return Ok(NetworkEvent::GossipBlock(peer_id, l2_block_response));
+                    }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(request_response::Event::Message {peer, message, .. })) => {
                         match message {
@@ -207,5 +219,12 @@ impl Network {
             error!("Failed to send status response: {:?}", failed_response);
         };
         Ok(())
+    }
+
+    pub fn publish_message(&mut self, topic: &str, message: Vec<u8>) {
+        let gossipsub_topic = gossipsub::IdentTopic::new(topic);
+        if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(gossipsub_topic, message) {
+            error!("Failed to publish message: {:?}", e);
+        }
     }
 }
