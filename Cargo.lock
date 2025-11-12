@@ -2782,6 +2782,7 @@ dependencies = [
  "chrono",
  "citrea-common",
  "citrea-evm",
+ "citrea-network",
  "citrea-primitives",
  "citrea-stf",
  "digest 0.10.7",

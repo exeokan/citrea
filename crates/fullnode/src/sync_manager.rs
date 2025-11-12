@@ -6,6 +6,7 @@ use tokio::{select, sync::mpsc};
 use citrea_network::types::{NetworkRequest, StatusResponse};
 use tracing::{error, warn};
 
+#[allow(dead_code)] // TODO: remove when all events are handled
 pub(crate) enum SyncManagerMessage {
     // TODO: add gossip block to update known head
     // so that we can prune some peers that are not useful
@@ -129,7 +130,7 @@ where
         }
     }
 
-    async fn download_from_best_peer(&self) -> anyhow::Result<()> {
+    async fn download_from_best_peer(&mut self) -> anyhow::Result<()> {
         let head_block = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
         // TODO: handle pruned blocks
 
@@ -154,6 +155,8 @@ where
         let request = NetworkRequest::GetL2BlockRange { peer_id, start, end };
         if let Err(e) = self.send_network_message(request).await {
             error!("Failed to request L2 block range from peer {}: {}", peer_id, e);
+        } else {
+            self.download_state = DownloadState::Syncing { peer_id, start, end };
         }
         Ok(())
     }

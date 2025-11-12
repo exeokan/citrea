@@ -17,6 +17,7 @@ use citrea_evm::{
     populate_deposit_system_events, populate_set_block_info_event, AccountInfo, CallMessage, Evm,
     RlpEvmTransaction, MIN_TRANSACTION_GAS, SYSTEM_SIGNER,
 };
+use citrea_network::types::NetworkRequest;
 use citrea_primitives::basefee::calculate_next_block_base_fee;
 use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::merkle::{compute_tx_hashes, compute_tx_merkle_root};
@@ -60,6 +61,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
+// use sov_rollup_interface::rpc::LedgerRpcProvider;
 
 use crate::commitment::service::CommitmentService;
 use crate::da::{da_block_monitor, get_da_block_data};
@@ -159,6 +161,7 @@ where
         backup_manager: Arc<BackupManager>,
         rpc_message_rx: UnboundedReceiver<SequencerRpcMessage>,
         canon_state_tx: mpsc::UnboundedSender<CanonStateNotification>,
+        _network_tx: mpsc::Sender<NetworkRequest>,
     ) -> anyhow::Result<Self> {
         let sov_tx_signer_priv_key =
             K256PrivateKey::try_from(hex::decode(&config.private_key)?.as_slice())?;
@@ -430,7 +433,7 @@ where
         last_used_l1_height: &mut u64,
     ) -> anyhow::Result<()> {
         let start: Instant = Instant::now();
-        let l2_height = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0) + 1;
+        let l2_height = SharedLedgerOps::get_head_l2_block_height(&self.ledger_db)?.unwrap_or(0) + 1;
         self.fork_manager.register_block(l2_height)?;
         let result = {
             if da_blocks.len() == 1 && da_blocks[0].header().height() == *last_used_l1_height {
@@ -448,6 +451,13 @@ where
                 if let Err(_closed) = self.l2_block_tx.send(l2_height) {
                     debug!("l2_block_tx is closed");
                 }
+                // TODO: publish the L2 block to the network
+
+                // let l2_block = LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
+                // let network_request = NetworkRequest::PublishMessage { 
+                //     topic: "l2_blocks".to_string(), 
+                //     message: l2_block.serialize(serializer)
+                // };
             }
             Err(e) => {
                 error!("Sequencer error: {}", e);
@@ -1104,7 +1114,7 @@ where
         let prestate = self.storage_manager.create_final_view_storage();
         let mut working_set = WorkingSet::new(prestate.clone());
         let evm = Evm::<DefaultContext>::default();
-        let head_l2_height = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
+        let head_l2_height = SharedLedgerOps::get_head_l2_block_height(&self.ledger_db)?.unwrap_or(0);
         let _spec_id = fork_from_block_number(head_l2_height).spec_id;
 
         // Get last processed L1 height from light client

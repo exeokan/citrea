@@ -69,6 +69,7 @@ sov-state = { path = "../sovereign-sdk/module-system/sov-state" }
 citrea-common = { path = "../common" }
 citrea-evm = { path = "../evm", features = ["native"] }
 citrea-primitives = { path = "../primitives" }
+citrea-network = { path = "../network" }
 citrea-stf = { path = "../citrea-stf", features = ["native"] }
 l2-block-rule-enforcer = { path = "../l2-block-rule-enforcer", features = ["native"] }
 

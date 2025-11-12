@@ -165,21 +165,7 @@ impl Network {
         }
     }
 
-    pub fn send_rpc_request(&mut self, peer_id: Option<PeerId>, request: Eth2Request) {
-        // REMOVE ME: for testing only
-        let peer_id = if let Some(peer_id) = peer_id {
-            peer_id
-        } else {
-            // pick a random peer from the connected peers
-            match self.swarm.connected_peers().next() {
-                Some(p) => p.to_owned(),
-                None => {
-                    error!("No connected peers to send RPC request");
-                    return;
-                }
-            }
-        };
-
+    pub fn send_rpc_request(&mut self, peer_id: PeerId, request: Eth2Request) {
         let request_id = self
             .swarm
             .behaviour_mut()

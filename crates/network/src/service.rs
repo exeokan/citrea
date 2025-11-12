@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use citrea_common::NetworkConfig;
-use libp2p::request_response::InboundRequestId;
 use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::{LedgerDB, SharedLedgerOps};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
@@ -17,7 +16,7 @@ pub struct NetworkService
     network: Network,
     ledger_db: LedgerDB,
     request_rx: mpsc::Receiver<NetworkRequest>,
-    _l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
+    l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
 }
 
 impl NetworkService {
@@ -34,33 +33,34 @@ impl NetworkService {
             network,
             ledger_db,
             request_rx,
-            _l2_sync_tx,
+            l2_sync_tx,
         })
     }
 
     pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
-        let (response_tx, mut response_rx) = mpsc::channel::<(InboundRequestId, Result<Eth2Response>)>(100);
-        let mut rpc_request_interval = tokio::time::interval(std::time::Duration::from_secs(5));
-
+        // TODO: parameterize channel size
+        let (response_tx, mut response_rx) = mpsc::channel(100);
         loop {
             tokio::select! {
-                Some(_request) = self.request_rx.recv() => {
-                    // Handle incoming network requests here
+                Some(request) = self.request_rx.recv() => {
+                    self.on_network_request(request);
                 }
                 network_event = self.network.next_event() => {
                     let event = network_event.expect("Failed to get network event");
                     match event {
                         NetworkEvent::RequestReceived { request_id, request } => {
-                            // don't block the event loop
                             let ledger_db = self.ledger_db.clone();
                             let tx = response_tx.clone();
+                            // don't block the event loop
                             tokio::spawn(async move {
-                                let result = Self::handle_incoming_rpc_request(&ledger_db, request);
+                                let result = Self::on_inbound_request(&ledger_db, request);
                                 let _ = tx.send((request_id, result)).await;
                             });
                         }
                         NetworkEvent::ResponseReceived { peer_id, response } => {
-                            info!("Response received from peer {peer_id}: {response:?}");
+                            if let Err(e) = self.on_response_received(peer_id, response) {
+                                tracing::error!("Error handling response from peer {peer_id}: {e:?}");
+                            }
                         }
                         _ => {
                             info!("Received other network event");
@@ -72,23 +72,14 @@ impl NetworkService {
                         // TODO: propagate the error to the caller peer
                         Ok(response) => {
                             if let Err(e) = self.network.send_rpc_response(request_id, response) {
-                                tracing::error!("Error sending RPC response: {:?}", e);
+                                tracing::error!("Error sending RPC response: {e:?}");
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Error handling incoming RPC request: {:?}", e);
+                            tracing::error!("Error handling incoming RPC request: {e:?}");
                         }
                     }
                 }
-                _ = rpc_request_interval.tick() => {
-                    self.network.send_rpc_request(None, Eth2Request::BlocksByRange(
-                        BlocksByRangeRequest {
-                            start: 1,
-                            end: 3,
-                        }
-                    ));
-                }
-
                 _ = &mut shutdown_signal => {
                     info!("Shutting down NetworkService");
                     return;
@@ -97,7 +88,32 @@ impl NetworkService {
         }
     }
 
-    fn handle_incoming_rpc_request(
+    fn on_network_request(&mut self, request: NetworkRequest) {
+        match request {
+            NetworkRequest::PublishMessage { .. } => {
+                unimplemented!();
+            }
+            NetworkRequest::AddPeer(_peer_id) => {
+                unimplemented!();
+            }
+            NetworkRequest::RemovePeer(_peer_id) => {
+               unimplemented!();
+            }
+            NetworkRequest::GetL2BlockRange { peer_id, start, end } => {
+                self.network.send_rpc_request(peer_id, Eth2Request::BlocksByRange(
+                    BlocksByRangeRequest { start, end }
+                ));
+            }
+            NetworkRequest::ReportPeer(_peer_id) => {
+                unimplemented!();
+            }
+            NetworkRequest::GetPeerStatus(peer_id) => {
+                self.network.send_rpc_request(peer_id, Eth2Request::Status);
+            }
+        }
+    }
+
+    fn on_inbound_request(
         ledger_db: &LedgerDB,
         request: Eth2Request,
     ) -> Result<Eth2Response> {
@@ -117,6 +133,30 @@ impl NetworkService {
                 Ok(Eth2Response::BlocksByRange(blocks))
             }
         }
+    }
+
+    fn on_response_received(&self, peer_id: libp2p::PeerId, response: Eth2Response) -> anyhow::Result<()> {
+        match response {
+            Eth2Response::Status(status) => {
+                info!("Received status from peer {}: {:?}", peer_id, status);
+                let message = L2SyncMessage::PeerStatus(status);
+                self.send_l2_sync_message(message)
+            }
+            Eth2Response::BlocksByRange(blocks) => {
+                info!("Received {} blocks from peer {}", blocks.len(), peer_id);
+                let message = L2SyncMessage::BlockBatch(peer_id, blocks);
+                self.send_l2_sync_message(message)
+            }
+        }
+    }
+
+    fn send_l2_sync_message(&self, message: L2SyncMessage) -> anyhow::Result<()> {
+        if let Some(l2_sync_tx) = &self.l2_sync_tx {
+            if let Err(e) = l2_sync_tx.try_send(message) {
+                return Err(anyhow::anyhow!("Failed to send L2 sync message: {:?}", e));
+            }
+        }
+        Ok(())
     }
 }
 

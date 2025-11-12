@@ -7,8 +7,7 @@ use citrea_batch_prover::prover::Prover;
 use citrea_batch_prover::L2Syncer as BatchProverL2Syncer;
 use citrea_common::backup::BackupManager;
 use citrea_common::{
-    BatchProverConfig, FullNodeConfig, InitParams, LightClientProverConfig, NodeType,
-    SequencerConfig,
+    BatchProverConfig, FullNodeConfig, InitParams, LightClientProverConfig, NodeType, SequencerConfig
 };
 use citrea_fullnode::da_block_handler::L1BlockHandler as FullNodeL1BlockHandler;
 use citrea_fullnode::L2Syncer as FullNodeL2Syncer;
@@ -208,7 +207,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
         rpc_module: RpcModule<()>,
         backup_manager: Arc<BackupManager>,
         task_executor: TaskExecutor,
-    ) -> Result<(CitreaSequencer<Self::DaService>, RpcModule<()>)> {
+    ) -> Result<(CitreaSequencer<Self::DaService>, RpcModule<()>, NetworkService)> {
         let current_l2_height = ledger_db
             .get_head_l2_block()
             .map_err(|e| anyhow!("Failed to get head l2 block: {}", e))?
@@ -224,6 +223,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
 
         citrea_sequencer::build_services(
             sequencer_config,
+            rollup_config.network.clone(),
             init_params,
             native_stf,
             rollup_config.public_keys,
