@@ -1,9 +1,11 @@
-use std::{collections::HashMap, time::Duration};
-use libp2p::PeerId;
-use sov_db::ledger_db::SharedLedgerOps;
-use tokio::{select, sync::mpsc};
+use std::collections::HashMap;
+use std::time::Duration;
 
 use citrea_network::types::{NetworkRequest, StatusResponse};
+use libp2p::PeerId;
+use sov_db::ledger_db::SharedLedgerOps;
+use tokio::select;
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 #[allow(dead_code)] // TODO: remove when all events are handled
@@ -21,7 +23,11 @@ pub(crate) enum SyncManagerMessage {
 
 enum DownloadState {
     Idle,
-    Syncing { peer_id: PeerId, start: u64, end: u64 },
+    Syncing {
+        peer_id: PeerId,
+        start: u64,
+        end: u64,
+    },
 }
 
 pub(crate) struct SyncManager<DB>
@@ -100,7 +106,11 @@ where
                 match result {
                     Ok((start, end)) => {
                         match self.download_state {
-                            DownloadState::Syncing { peer_id: _ds_peer_id, start: ds_start, end: ds_end } => {
+                            DownloadState::Syncing {
+                                peer_id: _ds_peer_id,
+                                start: ds_start,
+                                end: ds_end,
+                            } => {
                                 // TODO: alt check ds_end > end: ok
                                 if start == ds_start && end == ds_end {
                                     self.download_state = DownloadState::Idle;
@@ -111,7 +121,6 @@ where
                             }
                             _ => {} // TODO: handle unexpected state
                         }
-                        
                     }
                     Err(_e) => {
                         // Handle error
@@ -141,9 +150,12 @@ where
         // filter peers such that:
         // - have status
         // - have head block > local head block
-        let best_peer = self.peer_states.iter()
-            .filter_map(|(peer_id, status_opt)| 
-                status_opt.as_ref().map(|status| (*peer_id, status)))
+        let best_peer = self
+            .peer_states
+            .iter()
+            .filter_map(|(peer_id, status_opt)| {
+                status_opt.as_ref().map(|status| (*peer_id, status))
+            })
             .filter(|(_, status)| status.head_block > head_block)
             .max_by_key(|(_, status)| status.head_block);
 
@@ -153,14 +165,25 @@ where
             return Ok(());
         };
         let start = head_block + 1;
-        let end = (start + self.sync_blocks_count - 1).min(status.head_block); 
+        let end = (start + self.sync_blocks_count - 1).min(status.head_block);
         // TODO: dynamically change sync blocks count if there is response errors
 
-        let request = NetworkRequest::GetL2BlockRange { peer_id, start, end };
+        let request = NetworkRequest::GetL2BlockRange {
+            peer_id,
+            start,
+            end,
+        };
         if let Err(e) = self.send_network_message(request).await {
-            error!("Failed to request L2 block range from peer {}: {}", peer_id, e);
+            error!(
+                "Failed to request L2 block range from peer {}: {}",
+                peer_id, e
+            );
         } else {
-            self.download_state = DownloadState::Syncing { peer_id, start, end };
+            self.download_state = DownloadState::Syncing {
+                peer_id,
+                start,
+                end,
+            };
         }
         Ok(())
     }

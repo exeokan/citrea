@@ -8,15 +8,17 @@ use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::{
+    gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+};
 pub use service::NetworkService;
 use tokio::{io, select};
 use tracing::{error, info};
 
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
+mod rpc;
 pub mod service;
 pub mod types;
-mod rpc;
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
@@ -26,7 +28,7 @@ struct MyBehaviour {
 }
 
 #[allow(dead_code)] // TODO: remove when periodic check on outbound requests is implemented
-struct OutboundRequest{
+struct OutboundRequest {
     peer_id: PeerId,
     timestamp: Instant,
 }
@@ -76,7 +78,11 @@ impl Network {
                     key.public().to_peer_id(),
                 )?;
 
-                Ok(MyBehaviour { gossipsub, mdns, eth2_rpc: rpc::create_eth2_behaviour() })
+                Ok(MyBehaviour {
+                    gossipsub,
+                    mdns,
+                    eth2_rpc: rpc::create_eth2_behaviour(),
+                })
             })?
             .build();
 
@@ -173,24 +179,30 @@ impl Network {
             .send_request(&peer_id, request);
 
         let timestamp = Instant::now();
-        let outbound_request = OutboundRequest {
-            peer_id,
-            timestamp,
-        };
-        self.pending_outbound_requests.insert(request_id, outbound_request);
+        let outbound_request = OutboundRequest { peer_id, timestamp };
+        self.pending_outbound_requests
+            .insert(request_id, outbound_request);
     }
 
     // TODO: what happens when the response is too large?
-    pub fn send_rpc_response(&mut self, request_id: InboundRequestId, response: Eth2Response) -> anyhow::Result<()> {
-        let channel = self.pending_inbound_requests
+    pub fn send_rpc_response(
+        &mut self,
+        request_id: InboundRequestId,
+        response: Eth2Response,
+    ) -> anyhow::Result<()> {
+        let channel = self
+            .pending_inbound_requests
             .remove(&request_id)
-            .ok_or_else(|| anyhow::anyhow!("No pending inbound request found for the given request ID"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("No pending inbound request found for the given request ID")
+            })?;
 
         if let Err(failed_response) = self
             .swarm
             .behaviour_mut()
             .eth2_rpc
-            .send_response(channel, response) {
+            .send_response(channel, response)
+        {
             // TODO: handle this error
             error!("Failed to send status response: {:?}", failed_response);
         };

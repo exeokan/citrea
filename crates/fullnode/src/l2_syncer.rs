@@ -221,11 +221,26 @@ where
         Ok(())
     }
 
-    async fn on_syncer_event(&mut self, event: L2SyncMessage, manager_tx: &mpsc::Sender<SyncManagerMessage>) { // TODO: propagate error
+    async fn on_syncer_event(
+        &mut self,
+        event: L2SyncMessage,
+        manager_tx: &mpsc::Sender<SyncManagerMessage>,
+    ) {
+        // TODO: propagate error
         match event {
             L2SyncMessage::BlockBatch(peer_id, l2_blocks) => {
-                let start_height = l2_blocks.first().expect("Block batch is non-empty").header.height.to();
-                let end_height = l2_blocks.last().expect("Block batch is non-empty").header.height.to();
+                let start_height = l2_blocks
+                    .first()
+                    .expect("Block batch is non-empty")
+                    .header
+                    .height
+                    .to();
+                let end_height = l2_blocks
+                    .last()
+                    .expect("Block batch is non-empty")
+                    .header
+                    .height
+                    .to();
 
                 // While syncing, we'd like to process L2 blocks as they come without any delays.
                 for l2_block in l2_blocks {
@@ -235,7 +250,10 @@ where
                         match result {
                             Ok(_) => break,
                             Err(e) => {
-                                error!("Failed to process L2 block {}: {}", l2_block.header.height, e);
+                                error!(
+                                    "Failed to process L2 block {}: {}",
+                                    l2_block.header.height, e
+                                );
                                 let backoff_duration = backoff.next_backoff().expect("Failed to process L2 block multiple times. Killing L2Syncer...");
                                 tokio::time::sleep(backoff_duration).await;
                             }
@@ -243,25 +261,25 @@ where
                     }
                 }
                 // TODO: Either penalize here or in the sync manager
-                manager_tx.send(
-                    SyncManagerMessage::BatchProcessed(peer_id, Ok((start_height, end_height)))
-                )
-                .await
-                .expect("SyncManager receiver dropped");
+                manager_tx
+                    .send(SyncManagerMessage::BatchProcessed(
+                        peer_id,
+                        Ok((start_height, end_height)),
+                    ))
+                    .await
+                    .expect("SyncManager receiver dropped");
             }
             L2SyncMessage::PeerStatus(peer_id, response) => {
-                manager_tx.send(
-                    SyncManagerMessage::PeerStatus((peer_id, response))
-                )
-                .await
-                .expect("SyncManager receiver dropped");
+                manager_tx
+                    .send(SyncManagerMessage::PeerStatus((peer_id, response)))
+                    .await
+                    .expect("SyncManager receiver dropped");
             }
             L2SyncMessage::NewPeer(peer_id) => {
-                manager_tx.send(
-                    SyncManagerMessage::NewPeer(peer_id)
-                )
-                .await
-                .expect("SyncManager receiver dropped");
+                manager_tx
+                    .send(SyncManagerMessage::NewPeer(peer_id))
+                    .await
+                    .expect("SyncManager receiver dropped");
             }
             _ => unimplemented!("Other L2SyncMessage variants are not implemented yet"),
         }

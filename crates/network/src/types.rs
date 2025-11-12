@@ -1,4 +1,5 @@
-use libp2p::{request_response::InboundRequestId, PeerId};
+use libp2p::request_response::InboundRequestId;
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
 
@@ -29,10 +30,17 @@ pub(crate) enum Eth2Response {
 }
 
 pub enum NetworkRequest {
-    PublishMessage { topic: String, message: Vec<u8> },
+    PublishMessage {
+        topic: String,
+        message: Vec<u8>,
+    },
     AddPeer(PeerId),
     RemovePeer(PeerId),
-    GetL2BlockRange { peer_id: PeerId, start: u64, end: u64 },
+    GetL2BlockRange {
+        peer_id: PeerId,
+        start: u64,
+        end: u64,
+    },
     ReportPeer(PeerId), // TODO: add degree/reason
     GetPeerStatus(PeerId),
 }

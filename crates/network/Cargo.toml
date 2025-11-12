@@ -15,10 +15,10 @@ anyhow = { workspace = true }
 futures = { workspace = true }
 libp2p = { workspace = true, features = ["tokio", "gossipsub", "noise", "tcp", "yamux", "quic", "macros", "mdns", "request-response", "json"] }
 reth-tasks = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 yamux = { workspace = true }
-serde = { workspace = true }
 
 # Sov SDK deps
 sov-db = { path = "../sovereign-sdk/full-node/db/sov-db" }
