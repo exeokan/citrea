@@ -2641,6 +2641,7 @@ dependencies = [
  "citrea-storage-ops",
  "hex",
  "jsonrpsee",
+ "libp2p",
  "metrics 0.23.1",
  "metrics-derive",
  "reth-tasks",

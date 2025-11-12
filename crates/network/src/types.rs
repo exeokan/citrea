@@ -28,16 +28,16 @@ pub(crate) enum Eth2Response {
 
 pub enum NetworkRequest {
     PublishMessage { topic: String, message: Vec<u8> },
-    AddPeer { peer_id: String },
-    RemovePeer { peer_id: String },
-    GetL2BlockRange { start: u64, end: u64 },
-    ReportPeer { peer_id: String },
-    GetPeerStatus { peer_id: String },
+    AddPeer(PeerId),
+    RemovePeer(PeerId),
+    GetL2BlockRange { peer_id: PeerId,start: u64, end: u64 },
+    ReportPeer(PeerId), // TODO: add degree/reason
+    GetPeerStatus(PeerId),
 }
 
 pub enum L2SyncMessage {
-    GossipBlock,
-    BlockBatch(Vec<()>),
+    GossipBlock(PeerId, L2BlockResponse),
+    BlockBatch(PeerId, Vec<L2BlockResponse>),
     NewPeer(PeerId),
     DisconnectPeer(PeerId),
     PeerStatus(StatusResponse),

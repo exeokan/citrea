@@ -155,6 +155,9 @@ mod metrics;
 /// Module providing RPC functionality
 pub mod rpc;
 
+/// Sync Manager module
+mod sync_manager;
+
 /// Builds and initializes all fullnode services
 ///
 /// # Arguments
@@ -231,6 +234,9 @@ where
 
     let include_tx_bodies = runner_config.include_tx_body;
 
+    let (network_request_tx, network_request_rx) = mpsc::channel(100);
+    let (l2_syncer_tx, l2_syncer_rx) = mpsc::channel(100);
+
     let l2_syncer = L2Syncer::new(
         runner_config,
         init_params,
@@ -243,6 +249,8 @@ where
         l2_block_tx,
         backup_manager.clone(),
         include_tx_bodies,
+        l2_syncer_rx,
+        network_request_tx,
     )?;
 
     let l1_block_handler = L1BlockHandler::new(
@@ -256,14 +264,11 @@ where
         backup_manager,
     );
 
-    // TODO pass request tx to L2Syncer
-    let (_request_tx, request_rx) = mpsc::channel(100);
-
     let citrea_network = NetworkService::build(
         network_config,
         ledger_db,
-        request_rx,
-        None, // TODO: share this channel with L2Syncer
+        network_request_rx,
+        Some(l2_syncer_tx),
     )?;
     Ok((
         l2_syncer,

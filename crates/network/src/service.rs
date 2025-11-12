@@ -25,7 +25,7 @@ impl NetworkService {
         network_config: NetworkConfig,
         ledger_db: LedgerDB,
         request_rx: mpsc::Receiver<NetworkRequest>,
-        _l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
+        l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
     ) -> Result<Self> {
 
         let network =
