@@ -221,7 +221,7 @@ where
         Ok(())
     }
 
-    async fn on_syncer_event(&mut self, event: L2SyncMessage, manager_tx: &mpsc::Sender<SyncManagerMessage>) {
+    async fn on_syncer_event(&mut self, event: L2SyncMessage, manager_tx: &mpsc::Sender<SyncManagerMessage>) { // TODO: propagate error
         match event {
             L2SyncMessage::BlockBatch(peer_id, l2_blocks) => {
                 let start_height = l2_blocks.first().expect("Block batch is non-empty").header.height.to();
@@ -249,8 +249,19 @@ where
                 .await
                 .expect("SyncManager receiver dropped");
             }
-            L2SyncMessage::PeerStatus(response) => {
-                info!("Received peer status: {:?}", response);
+            L2SyncMessage::PeerStatus(peer_id, response) => {
+                manager_tx.send(
+                    SyncManagerMessage::PeerStatus((peer_id, response))
+                )
+                .await
+                .expect("SyncManager receiver dropped");
+            }
+            L2SyncMessage::NewPeer(peer_id) => {
+                manager_tx.send(
+                    SyncManagerMessage::NewPeer(peer_id)
+                )
+                .await
+                .expect("SyncManager receiver dropped");
             }
             _ => unimplemented!("Other L2SyncMessage variants are not implemented yet"),
         }

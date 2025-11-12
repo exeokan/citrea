@@ -5,7 +5,7 @@ use sov_db::ledger_db::{LedgerDB, SharedLedgerOps};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
 use sov_rollup_interface::rpc::LedgerRpcProvider;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::types::{BlocksByRangeRequest, Eth2Request, Eth2Response, StatusResponse};
 use crate::types::{L2SyncMessage, NetworkEvent, NetworkRequest};
@@ -59,7 +59,15 @@ impl NetworkService {
                         }
                         NetworkEvent::ResponseReceived { peer_id, response } => {
                             if let Err(e) = self.on_response_received(peer_id, response) {
-                                tracing::error!("Error handling response from peer {peer_id}: {e:?}");
+                                error!("Error handling response from peer {peer_id}: {e:?}");
+                            }
+                        }
+                        NetworkEvent::NewPeers(new_peers) => {
+                            for peer_id in new_peers {
+                                let message = L2SyncMessage::NewPeer(peer_id);
+                                if let Err(e) = self.send_l2_sync_message(message) {
+                                    error!("Failed to notify L2 syncer of new peer {}: {:?}", peer_id, e);
+                                }
                             }
                         }
                         _ => {
@@ -72,11 +80,11 @@ impl NetworkService {
                         // TODO: propagate the error to the caller peer
                         Ok(response) => {
                             if let Err(e) = self.network.send_rpc_response(request_id, response) {
-                                tracing::error!("Error sending RPC response: {e:?}");
+                                error!("Error sending RPC response: {e:?}");
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Error handling incoming RPC request: {e:?}");
+                            error!("Error handling incoming RPC request: {e:?}");
                         }
                     }
                 }
@@ -139,7 +147,7 @@ impl NetworkService {
         match response {
             Eth2Response::Status(status) => {
                 info!("Received status from peer {}: {:?}", peer_id, status);
-                let message = L2SyncMessage::PeerStatus(status);
+                let message = L2SyncMessage::PeerStatus(peer_id, status);
                 self.send_l2_sync_message(message)
             }
             Eth2Response::BlocksByRange(blocks) => {

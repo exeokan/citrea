@@ -4,13 +4,14 @@ use sov_db::ledger_db::SharedLedgerOps;
 use tokio::{select, sync::mpsc};
 
 use citrea_network::types::{NetworkRequest, StatusResponse};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 #[allow(dead_code)] // TODO: remove when all events are handled
 pub(crate) enum SyncManagerMessage {
     // TODO: add gossip block to update known head
     // so that we can prune some peers that are not useful
     // we may also remove ledger db import and just rely on messages from l2 syncer
+    // or implement a threshold where we dont downlaod blocks if we are close to head of the peer
     BatchProcessed(PeerId, Result<(u64, u64), anyhow::Error>), // TODO change to proper result type
     NewPeer(PeerId),
     DisconnectPeer(PeerId),
@@ -75,6 +76,8 @@ where
                         let request = NetworkRequest::GetPeerStatus(*peer_id);
                         if let Err(e) = self.send_network_message(request).await {
                             error!("Failed to request status from peer {}: {}", peer_id, e);
+                        } else {
+                            info!("Requested status from peer {}", peer_id); // TODO: change to debug
                         }
                     }
                 }

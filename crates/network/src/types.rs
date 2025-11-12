@@ -30,7 +30,7 @@ pub enum NetworkRequest {
     PublishMessage { topic: String, message: Vec<u8> },
     AddPeer(PeerId),
     RemovePeer(PeerId),
-    GetL2BlockRange { peer_id: PeerId,start: u64, end: u64 },
+    GetL2BlockRange { peer_id: PeerId, start: u64, end: u64 },
     ReportPeer(PeerId), // TODO: add degree/reason
     GetPeerStatus(PeerId),
 }
@@ -40,7 +40,7 @@ pub enum L2SyncMessage {
     BlockBatch(PeerId, Vec<L2BlockResponse>),
     NewPeer(PeerId),
     DisconnectPeer(PeerId),
-    PeerStatus(StatusResponse),
+    PeerStatus(PeerId, StatusResponse),
 }
 
 #[allow(dead_code)] // TODO: remove when all events are handled
