@@ -122,6 +122,7 @@ where
                 self.peer_states.insert(peer_id, None);
             }
             SyncManagerMessage::DisconnectPeer(peer_id) => {
+                // TODO: handle ongoing download if from this peer
                 self.peer_states.remove(&peer_id);
             }
             SyncManagerMessage::PeerStatus((peer_id, status)) => {

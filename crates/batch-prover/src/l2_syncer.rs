@@ -162,6 +162,7 @@ where
                     info!("Shutting down L2 syncer");
                     return;
                 },
+                // BIG TODO: handle validation of L2 block batches/ gossip blocks properly
                 Some(l2_blocks) = l2_rx.recv() => {
                     // While syncing, we'd like to process L2 blocks as they come without any delays.
                     for l2_block in l2_blocks {

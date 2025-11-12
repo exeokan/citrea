@@ -18,6 +18,8 @@ pub(crate) enum Eth2Request {
 pub struct StatusResponse {
     pub head_block: u64,
     pub last_pruned_block: Option<u64>,
+    // TODO: add include_tx_body here
+    // and dont pull blocks from this peer/ disconnect if necessary
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -152,7 +152,7 @@ where
             self.network_request_tx.clone(),
             self.sync_blocks_count,
             // TODO: make these configurable
-            Duration::from_secs(10),
+            Duration::from_secs(5),
             Duration::from_secs(1),
         );
         let handle = tokio::spawn(sync_manager.run());
