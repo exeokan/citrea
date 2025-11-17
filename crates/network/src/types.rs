@@ -26,6 +26,8 @@ pub struct StatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Eth2Response {
     Status(StatusResponse),
+    // P2P-TODO: use Result<Vec<L2BlockResponse>, Error> instead, 
+    // Errors: invalid range, too many blocks, size limit exceeded
     BlocksByRange(Vec<L2BlockResponse>),
 }
 
@@ -57,7 +59,6 @@ pub enum L2SyncMessage {
     },
 }
 
-#[allow(dead_code)] // P2P-TODO: remove when all events are handled
 pub(crate) enum NetworkEvent {
     GossipBlock(PeerId, L2BlockResponse),
     RequestReceived {
