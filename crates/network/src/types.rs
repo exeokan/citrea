@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BlocksByRangeRequest {
+pub struct BlocksByRangeRequest {
     pub start: u64,
     pub end: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum Eth2Request {
+pub enum Eth2Request {
     Status,
     BlocksByRange(BlocksByRangeRequest),
 }
@@ -24,7 +24,7 @@ pub struct StatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum Eth2Response {
+pub enum Eth2Response {
     Status(StatusResponse),
     BlocksByRange(Vec<L2BlockResponse>),
 }
@@ -49,8 +49,12 @@ pub enum L2SyncMessage {
     GossipBlock(PeerId, L2BlockResponse),
     BlockBatch(PeerId, Vec<L2BlockResponse>),
     NewPeer(PeerId),
-    DisconnectPeer(PeerId),
+    DisconnectedPeer(PeerId),
     PeerStatus(PeerId, StatusResponse),
+    RPCFailed {
+        peer_id: PeerId,
+        request: Eth2Request,
+    },
 }
 
 #[allow(dead_code)] // P2P-TODO: remove when all events are handled
@@ -68,6 +72,6 @@ pub(crate) enum NetworkEvent {
         peer_id: PeerId,
         request: Eth2Request,
     },
-    NewPeers(Vec<PeerId>),
-    DisconnectedPeers(Vec<PeerId>),
+    NewPeer(PeerId),
+    DisconnectedPeer(PeerId),
 }

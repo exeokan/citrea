@@ -125,6 +125,12 @@ impl Network {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Local node is listening on {address}");
                 }
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    return Ok(NetworkEvent::NewPeer(peer_id));
+                }
+                SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    return Ok(NetworkEvent::DisconnectedPeer(peer_id));
+                }
                 _ => {}
             }
         }
@@ -177,23 +183,20 @@ impl Network {
         match event {
             mdns::Event::Discovered(list) => {
                 // P2P-TODO: filter new peers based on history
-                let peer_ids = list.iter().map(|(peer_id, _)| *peer_id).collect();
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discovered a new peer: {peer_id}");
                     self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 }
-                Some(NetworkEvent::NewPeers(peer_ids))
             },
             // P2P-TODO: should we do remove peers on expired?
             mdns::Event::Expired(list) => {
-                let peer_ids = list.iter().map(|(peer_id, _)| *peer_id).collect();
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discover peer has expired: {peer_id}");
                     self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                 }
-                Some(NetworkEvent::DisconnectedPeers(peer_ids))
             },
         }
+        None
     }
 
     async fn on_gossipsub_event(

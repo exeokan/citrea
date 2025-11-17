@@ -61,12 +61,10 @@ impl NetworkService {
                                 error!("Error handling response from peer {peer_id}: {e:?}");
                             }
                         }
-                        NetworkEvent::NewPeers(new_peers) => {
-                            for peer_id in new_peers {
-                                let message = L2SyncMessage::NewPeer(peer_id);
-                                if let Err(e) = self.send_l2_sync_message(message) {
-                                    error!("Failed to notify L2 syncer of new peer {}: {:?}", peer_id, e);
-                                }
+                        NetworkEvent::NewPeer(peer_id) => {
+                            let message = L2SyncMessage::NewPeer(peer_id);
+                            if let Err(e) = self.send_l2_sync_message(message) {
+                                error!("Failed to notify L2 syncer of new peer {}: {:?}", peer_id, e);
                             }
                         }
                         NetworkEvent::GossipBlock(peer_id, block) => {
@@ -77,11 +75,17 @@ impl NetworkService {
                         }
                         NetworkEvent::RPCFailed { peer_id, request } => {
                             error!("RPC request {:?} to peer {} failed", request, peer_id);
-                            // P2P-TODO: implement further handling, e.g., slashing
+                            let message = L2SyncMessage::RPCFailed { peer_id, request };
+                            if let Err(e) = self.send_l2_sync_message(message) {
+                                error!("Failed to notify L2 syncer of failed RPC to peer {}: {:?}", peer_id, e);
+                            }
                         }
                         // P2P-TODO: send to l2 syncer
-                        NetworkEvent::DisconnectPeer(_peer_id) => {
-                            unimplemented!();
+                        NetworkEvent::DisconnectedPeer(peer_id) => {
+                            let message = L2SyncMessage::DisconnectedPeer(peer_id);
+                            if let Err(e) = self.send_l2_sync_message(message) {
+                                error!("Failed to notify L2 syncer of disconnected peer {}: {:?}", peer_id, e);
+                            }
                         }
                     }
                 }
