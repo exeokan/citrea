@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use citrea_common::NetworkConfig;
@@ -29,16 +29,10 @@ struct MyBehaviour {
     eth2_rpc: rpc::Eth2Behaviour,
 }
 
-#[allow(dead_code)] // P2P-TODO: remove when periodic check on outbound requests is implemented
-struct OutboundRequest {
-    peer_id: PeerId,
-    timestamp: Instant,
-}
-
 struct Network {
     swarm: Swarm<MyBehaviour>,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
-    pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>, // P2P-TODO: rm this, handle requestresponse outbound failure
+    pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
 }
 
 impl Network {
@@ -178,7 +172,16 @@ impl Network {
                             }
                         }
                     }
-                    // P2P-TODO handle other eth2rpc events
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(request_response::Event::OutboundFailure { peer, request_id, .. })) => {
+                        let failed_request = self.pending_outbound_requests
+                            .remove(&request_id)
+                            .expect("Failed outbound request must be tracked");
+                        // P2P-TODO: slashing based on error here?
+                        return Ok(NetworkEvent::RPCFailed {
+                            peer_id: peer,
+                            request: failed_request,
+                        });
+                    }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Local node is listening on {address}");
                     }
@@ -193,12 +196,10 @@ impl Network {
             .swarm
             .behaviour_mut()
             .eth2_rpc
-            .send_request(&peer_id, request);
+            .send_request(&peer_id, request.clone());
 
-        let timestamp = Instant::now();
-        let outbound_request = OutboundRequest { peer_id, timestamp };
         self.pending_outbound_requests
-            .insert(request_id, outbound_request);
+            .insert(request_id, request);
     }
 
     // P2P-TODO: what happens when the response is too large?

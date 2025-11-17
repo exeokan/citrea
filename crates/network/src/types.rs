@@ -64,6 +64,10 @@ pub(crate) enum NetworkEvent {
         peer_id: PeerId,
         response: Eth2Response,
     },
+    RPCFailed {
+        peer_id: PeerId,
+        request: Eth2Request,
+    },
     NewPeers(Vec<PeerId>),
     DisconnectPeer(PeerId),
 }

@@ -75,6 +75,10 @@ impl NetworkService {
                                 error!("Failed to notify L2 syncer of gossiped block from peer {}: {:?}", peer_id, e);
                             }
                         }
+                        NetworkEvent::RPCFailed { peer_id, request } => {
+                            error!("RPC request {:?} to peer {} failed", request, peer_id);
+                            // P2P-TODO: implement further handling, e.g., slashing
+                        }
                         // P2P-TODO: send to l2 syncer
                         NetworkEvent::DisconnectPeer(_peer_id) => {
                             unimplemented!();
