@@ -72,6 +72,7 @@ chrono = { version = "0.4.39", default-features = false }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 const-hex = "1.14"
 constmuck = "1.1"
+discv5 = "0.9.1"
 crypto-bigint = "0.5.5"
 digest = { version = "0.10.7", default-features = false, features = ["alloc"] }
 derive_more = { version = "1", default-features = false }
@@ -105,6 +106,7 @@ serde = { version = "1", default-features = false, features = ["alloc", "derive"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10.8", default-features = false, features = ["asm"] }
 schemars = { version = "0.8.16", features = ["derive"] }
+enr = "0.13.0"
 secp256k1 = { version = "0.30.0", default-features = false, features = ["global-context", "recovery"] }
 thiserror = { version = "2", default-features = false }
 tinyvec = { version = "1", default-features = false, features = ["alloc", "rustc_1_61", "rustc_1_57", "rustc_1_55"] }

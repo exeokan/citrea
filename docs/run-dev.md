@@ -119,6 +119,17 @@ If you want to test proofs, make sure to set `proof_sampling_number` in `resourc
 
 To publish blocks on Bitcoin Regtest, run the sequencer with `test_mode` in sequencer config set to false and blocks will be published every two seconds.
 
+### Discovery configuration
+
+The network service now uses discv5 for peer discovery. When running local nodes, you can control the discovery layer with the following environment variables:
+
+- `NETWORK_DISCOVERY_ENABLED` – set to `false` to disable discv5 (default: enabled).
+- `NETWORK_DISCOVERY_BIND_ADDR` – UDP socket used for the discovery service (e.g. `0.0.0.0:9000`).
+- `NETWORK_DISCOVERY_BOOTNODES` – comma separated list of base64-encoded ENRs to seed the routing table.
+- `NETWORK_DISCOVERY_KEY_PATH` – path to a file containing the node's hex-encoded secp256k1 private key; if the file does not exist it will be created so that ENRs stay stable between restarts.
+- `NETWORK_DISCOVERY_TARGET_PEERS` – maximum number of peers to search for before pausing background queries.
+- `NETWORK_DISCOVERY_QUERY_INTERVAL_SECS` – number of seconds between background FINDNODE queries (default: 30).
+
 _Optional_: Run light client prover:
 
 ```sh

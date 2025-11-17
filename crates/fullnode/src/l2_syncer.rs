@@ -180,7 +180,8 @@ where
     async fn process_l2_block(
         &mut self,
         l2_block_response: &L2BlockResponse,
-    ) -> anyhow::Result<()> { // TODO: return custom error, slash depending on it, 
+    ) -> anyhow::Result<()> {
+        // TODO: return custom error, slash depending on it,
         // and continue exponential backoff depending on error type
         let _l2_lock = self.backup_manager.start_l2_processing().await; // TODO: is this safe?
         let start = std::time::Instant::now();
@@ -295,7 +296,6 @@ where
                         height, head_height
                     );
                 }
-                
             }
             _ => unimplemented!("Other L2SyncMessage variants are not implemented yet"),
         }
@@ -316,7 +316,9 @@ where
                             "Failed to process L2 block {}: {}",
                             l2_block.header.height, e
                         );
-                        let backoff_duration = backoff.next_backoff().expect("Failed to process L2 block multiple times. Killing L2Syncer...");
+                        let backoff_duration = backoff.next_backoff().expect(
+                            "Failed to process L2 block multiple times. Killing L2Syncer...",
+                        );
                         tokio::time::sleep(backoff_duration).await;
                     }
                 }
