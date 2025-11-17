@@ -160,14 +160,13 @@ impl Network {
                 anyhow::anyhow!("No pending inbound request found for the given request ID")
             })?;
 
-        if let Err(failed_response) = self
+        if let Err(_failed_response) = self
             .swarm
             .behaviour_mut()
             .eth2_rpc
             .send_response(channel, response)
         {
-            // P2P-TODO: handle this error
-            error!("Failed to send status response: {:?}", failed_response);
+            error!("Failed to send response, request id: {request_id}");
         };
         Ok(())
     }
@@ -182,13 +181,11 @@ impl Network {
     async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
         match event {
             mdns::Event::Discovered(list) => {
-                // P2P-TODO: filter new peers based on history
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discovered a new peer: {peer_id}");
                     self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 }
             },
-            // P2P-TODO: should we do remove peers on expired?
             mdns::Event::Expired(list) => {
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discover peer has expired: {peer_id}");
