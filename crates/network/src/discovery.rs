@@ -22,6 +22,8 @@ const HEX_PREFIX: &str = "0x";
 pub(crate) struct DiscoveryComponents {
     pub service: DiscoveryService,
     pub event_rx: mpsc::Receiver<Event>,
+    #[allow(dead_code)]
+    pub local_enr: Enr<CombinedKey>,
 }
 
 pub(crate) struct DiscoveryService {
@@ -90,12 +92,13 @@ pub(crate) async fn start_service(
     let local_enr = build_local_enr(config, &enr_key)?;
     let listen_config = listen_config(config.udp_bind);
     let discv5_config = ConfigBuilder::new(listen_config).build();
-    let mut discv5 = Discv5::new(local_enr, enr_key, discv5_config)
+    let mut discv5 = Discv5::new(local_enr.clone(), enr_key, discv5_config)
         .map_err(|e| anyhow::anyhow!("Failed to create discv5 service: {e}"))?;
     discv5
         .start()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start discv5 service: {e}"))?;
+
     discv5
         .add_enr(
             discv5.local_enr().clone(), // ensure routing table is aware of local node
@@ -107,7 +110,11 @@ pub(crate) async fn start_service(
         .map_err(|e| anyhow::anyhow!("Failed to subscribe to discv5 events: {e}"))?;
     let service = DiscoveryService::new(discv5, config.target_peers);
     service.add_bootnodes(&config.bootnodes)?;
-    Ok(DiscoveryComponents { service, event_rx })
+    Ok(DiscoveryComponents {
+        service,
+        event_rx,
+        local_enr,
+    })
 }
 
 fn listen_config(bind: SocketAddr) -> ListenConfig {
@@ -272,7 +279,12 @@ pub(crate) fn multiaddr_to_socket(addr: &Multiaddr) -> Option<(SocketAddr, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+        path::Path,
+        time::Duration,
+    };
+    use tokio::time::timeout;
 
     #[test]
     fn parse_multiaddr_socket() {
@@ -314,5 +326,103 @@ mod tests {
         let first = load_or_generate_secret(Some(&key_path)).unwrap();
         let second = load_or_generate_secret(Some(&key_path)).unwrap();
         assert_eq!(first, second);
+    }
+
+    fn random_local_socket() -> SocketAddr {
+        let socket = UdpSocket::bind(("127.0.0.1", 0)).expect("bind ephemeral udp");
+        socket.local_addr().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn start_service_runs_discv5() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let mut config = DiscoveryConfig::default();
+        config.enabled = true;
+        config.udp_bind = random_local_socket();
+        config.enr_address = Some("127.0.0.1".parse().unwrap());
+        config.enr_udp_port = Some(config.udp_bind.port());
+        config.enr_tcp_port = Some(config.udp_bind.port());
+        config.private_key_path = Some(tmp_dir.path().join("disc.key"));
+
+        let (_libp2p_kp, enr_key) = prepare_identity(&config).expect("identity generation");
+        let enr_key = enr_key.expect("discovery key");
+
+        let DiscoveryComponents { service, .. } = start_service(&config, enr_key)
+            .await
+            .expect("discv5 service should start");
+
+        // Calling random_lookup drives the underlying discv5 query API.
+        timeout(std::time::Duration::from_secs(5), service.random_lookup())
+            .await
+            .expect("lookup should complete promptly")
+            .expect("discv5 query should not error");
+    }
+
+    fn mk_test_config(base_path: &Path) -> DiscoveryConfig {
+        let mut config = DiscoveryConfig::default();
+        config.enabled = true;
+        config.udp_bind = random_local_socket();
+        config.enr_address = Some("127.0.0.1".parse().unwrap());
+        config.enr_udp_port = Some(config.udp_bind.port());
+        config.enr_tcp_port = Some(config.udp_bind.port());
+        config.private_key_path = Some(base_path.join("disc.key"));
+        config
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn discv5_discovers_bootnode_peer() {
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+
+        let mut config_a = mk_test_config(tmp_a.path());
+        config_a.bootnodes = Vec::new();
+        let (_libp2p_a, enr_key_a) = prepare_identity(&config_a).expect("identity generation");
+        let enr_key_a = enr_key_a.expect("discovery key");
+        let DiscoveryComponents {
+            service: _service_a,
+            event_rx: mut events_a,
+            local_enr: enr_a,
+        } = start_service(&config_a, enr_key_a)
+            .await
+            .expect("service A starts");
+
+        let mut config_b = mk_test_config(tmp_b.path());
+        config_b.bootnodes = vec![enr_a.to_base64()];
+        let (_libp2p_b, enr_key_b) = prepare_identity(&config_b).expect("identity generation");
+        let enr_key_b = enr_key_b.expect("discovery key");
+        let DiscoveryComponents {
+            service: service_b,
+            local_enr: enr_b,
+            ..
+        } = start_service(&config_b, enr_key_b)
+            .await
+            .expect("service B starts");
+
+        service_b
+            .random_lookup()
+            .await
+            .expect("lookup request succeeds");
+        let target_node_id = enr_b.node_id();
+
+        let discovered = timeout(Duration::from_secs(10), async {
+            while let Some(event) = events_a.recv().await {
+                match event {
+                    Event::Discovered(enr) => {
+                        println!("discv5 discovered peer {}", enr.node_id());
+                        return Some(enr.node_id());
+                    }
+                    Event::NodeInserted { node_id, .. } if node_id == target_node_id => {
+                        println!("discv5 inserted peer {}", node_id);
+                        return Some(node_id);
+                    }
+                    _ => continue,
+                }
+            }
+            None
+        })
+        .await
+        .expect("event stream to produce output");
+
+        assert_eq!(discovered, Some(target_node_id));
     }
 }

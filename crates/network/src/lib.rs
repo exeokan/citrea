@@ -28,7 +28,8 @@ use tracing::{error, info, warn};
 
 mod discovery;
 use self::discovery::{
-    enr_multiaddrs, enr_peer_id, prepare_identity, start_service, DiscoveryService,
+    enr_multiaddrs, enr_peer_id, prepare_identity, start_service, DiscoveryComponents,
+    DiscoveryService,
 };
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
 mod rpc;
@@ -121,16 +122,14 @@ impl Network {
         {
             let handle = Handle::try_current()
                 .map_err(|_| anyhow!("Tokio runtime is required for discv5 discovery"))?;
-            let components = handle.block_on(start_service(&network_config.discovery, enr_key))?;
+            let DiscoveryComponents {
+                service, event_rx, ..
+            } = handle.block_on(start_service(&network_config.discovery, enr_key))?;
             let mut interval = tokio::time::interval(Duration::from_secs(
                 network_config.discovery.query_interval_secs,
             ));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            (
-                Some(components.service),
-                Some(components.event_rx),
-                Some(interval),
-            )
+            (Some(service), Some(event_rx), Some(interval))
         } else {
             (None, None, None)
         };
