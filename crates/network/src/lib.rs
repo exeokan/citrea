@@ -2,25 +2,25 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
-
 use anyhow::Result;
-use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-pub use service::NetworkService;
-use sov_rollup_interface::rpc::block::L2BlockResponse;
-use tokio::{io, select};
 use tracing::{error, info};
 use gossipsub::Message as GossipsubMessage;
 
+use sov_rollup_interface::rpc::block::L2BlockResponse;
+use citrea_common::NetworkConfig;
+
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
+
 mod rpc;
 pub mod service;
 pub mod types;
+pub use service::NetworkService;
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
@@ -62,7 +62,7 @@ impl Network {
                     // signing)
                     .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
                     .build()
-                    .map_err(io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
+                    .map_err(tokio::io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
 
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
@@ -110,83 +110,27 @@ impl Network {
     }
 
     pub async fn next_event(&mut self) -> Result<NetworkEvent> {
-        let swarm = &mut self.swarm;
-
         loop {
-            select! { // P2P-TODO: is this select necessary?
-                event = swarm.select_next_some() => match event {
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                        let mut ids = vec![];
-                        // P2P-TODO: filter new peers based on history
-                        for (peer_id, _multiaddr) in list {
-                            info!("mDNS discovered a new peer: {peer_id}");
-                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                            ids.push(peer_id);
-                        }
-                        return Ok(NetworkEvent::NewPeers(ids));
-                    },
-                    // P2P-TODO: should we do remove peers on expired?
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                        for (peer_id, _multiaddr) in list {
-                            info!("mDNS discover peer has expired: {peer_id}");
-                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                        }
-                    },
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                        propagation_source: peer_id,
-                        message_id: _id,
-                        message,
-                    })) => {
-                        // P2P-TODO: research gossipsub broadcast guarentees
-                        // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
-                        let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
-                        // try to deserialize the message to L2BlockResponse using serde
-                        let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                // P2P-TODO: slashing?
-                                error!("Failed to deserialize gossipsub message from peer {peer_id}: {e:?}");
-                                continue;
-                            }
-                        };
-                        return Ok(NetworkEvent::GossipBlock(peer_id, l2_block_response));
+            match self.swarm.select_next_some().await {
+                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(event)) => {
+                    if let Some(network_event) = self.on_mdns_event(event).await {
+                        return Ok(network_event);
                     }
-
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(request_response::Event::Message {peer, message, .. })) => {
-                        match message {
-                            request_response::Message::Request { request_id, request, channel } => {
-                                self.pending_inbound_requests.insert(request_id, channel);
-                                // send the request to the upper layer, which will call send_rpc_response once ready
-                                // P2P-TODO: consider using peer_id here
-                                return Ok(NetworkEvent::RequestReceived {
-                                    request_id,
-                                    request,
-                                });
-                            },
-                            request_response::Message::Response { request_id, response } => {
-                                self.pending_outbound_requests.remove(&request_id);
-                                return Ok(NetworkEvent::ResponseReceived {
-                                    peer_id: peer,
-                                    response,
-                                });
-                            }
-                        }
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(request_response::Event::OutboundFailure { peer, request_id, .. })) => {
-                        let failed_request = self.pending_outbound_requests
-                            .remove(&request_id)
-                            .expect("Failed outbound request must be tracked");
-                        // P2P-TODO: slashing based on error here?
-                        return Ok(NetworkEvent::RPCFailed {
-                            peer_id: peer,
-                            request: failed_request,
-                        });
-                    }
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        info!("Local node is listening on {address}");
-                    }
-                    _ => {}
                 }
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(event)) => {
+                    if let Some(event) = self.on_gossipsub_event(event).await {
+                        return Ok(event);
+                    }
+                }
+                SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(event)) => {
+                    if let Some(event) = self.on_eth2_rpc_event(event).await {
+                        return Ok(event);
+                    }
+                }
+                SwarmEvent::NewListenAddr { address, .. } => {
+                    info!("Local node is listening on {address}");
+                }
+                _ => {}
             }
         }
     }
@@ -231,6 +175,106 @@ impl Network {
         let gossipsub_topic = gossipsub::IdentTopic::new(topic);
         if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(gossipsub_topic, message) {
             error!("Failed to publish message: {:?}", e);
+        }
+    }
+
+    async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
+        match event {
+            mdns::Event::Discovered(list) => {
+                // P2P-TODO: filter new peers based on history
+                let peer_ids = list.iter().map(|(peer_id, _)| *peer_id).collect();
+                for (peer_id, _multiaddr) in list {
+                    info!("mDNS discovered a new peer: {peer_id}");
+                    self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                }
+                Some(NetworkEvent::NewPeers(peer_ids))
+            },
+            // P2P-TODO: should we do remove peers on expired?
+            mdns::Event::Expired(list) => {
+                let peer_ids = list.iter().map(|(peer_id, _)| *peer_id).collect();
+                for (peer_id, _multiaddr) in list {
+                    info!("mDNS discover peer has expired: {peer_id}");
+                    self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                }
+                Some(NetworkEvent::DisconnectedPeers(peer_ids))
+            },
+        }
+    }
+
+    async fn on_gossipsub_event(
+        &mut self,
+        event: gossipsub::Event,
+    ) -> Option<NetworkEvent> {
+        match event {
+            gossipsub::Event::Message {
+                propagation_source: peer_id,
+                message_id: _id,
+                message,
+            } => {
+                // P2P-TODO: research gossipsub broadcast guarentees
+                let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
+                let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
+                    Ok(msg) => msg,
+                    // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
+                    Err(_) => return None,
+                };
+                Some(NetworkEvent::GossipBlock(peer_id, l2_block_response))
+            }
+            gossipsub::Event::GossipsubNotSupported { .. } => {
+                // P2P-TODO: ban peer
+                None
+            }
+            gossipsub::Event::SlowPeer { .. } => {
+                // P2P-TODO: slash peer
+                None
+            }
+            gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
+        }
+    }
+
+    async fn on_eth2_rpc_event(
+        &mut self,
+        event: request_response::Event<Eth2Request, Eth2Response>,
+    ) -> Option<NetworkEvent> {
+        match event {
+            request_response::Event::Message {peer, message, .. } => {
+                match message {
+                    request_response::Message::Request { request_id, request, channel } => {
+                        self.pending_inbound_requests.insert(request_id, channel);
+                        // send the request to the upper layer, which will call send_rpc_response once ready
+                        // P2P-TODO: consider using peer_id here
+                        Some(NetworkEvent::RequestReceived {
+                            request_id,
+                            request,
+                        })
+                    },
+                    request_response::Message::Response { request_id, response } => {
+                        self.pending_outbound_requests.remove(&request_id);
+                        Some(NetworkEvent::ResponseReceived {
+                            peer_id: peer,
+                            response,
+                        })
+                    }
+                }
+            }
+            request_response::Event::OutboundFailure { peer, request_id, .. } => {
+                let failed_request = self.pending_outbound_requests
+                    .remove(&request_id)
+                    .expect("Failed outbound request must be tracked");
+                // P2P-TODO: slashing based on error here?
+                Some(NetworkEvent::RPCFailed {
+                    peer_id: peer,
+                    request: failed_request,
+                })
+            }
+            request_response::Event::InboundFailure { request_id, .. } => {
+                // P2P-TODO: Consider taking action on inbound failures based on error,
+                // including disconnection, and unsupported protocol
+                self.pending_inbound_requests
+                    .remove(&request_id);
+                None
+            }
+            request_response::Event::ResponseSent { .. } => None,
         }
     }
 }

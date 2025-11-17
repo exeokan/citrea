@@ -69,5 +69,5 @@ pub(crate) enum NetworkEvent {
         request: Eth2Request,
     },
     NewPeers(Vec<PeerId>),
-    DisconnectPeer(PeerId),
+    DisconnectedPeers(Vec<PeerId>),
 }
