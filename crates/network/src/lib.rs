@@ -112,18 +112,13 @@ impl Network {
     pub async fn next_event(&mut self) -> Result<NetworkEvent> {
         loop {
             match self.swarm.select_next_some().await {
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(event)) => {
-                    if let Some(network_event) = self.on_mdns_event(event).await {
-                        return Ok(network_event);
-                    }
-                }
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(event)) => {
-                    if let Some(event) = self.on_gossipsub_event(event).await {
-                        return Ok(event);
-                    }
-                }
-                SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(event)) => {
-                    if let Some(event) = self.on_eth2_rpc_event(event).await {
+                SwarmEvent::Behaviour(event) => {
+                    let network_event = match event {
+                        MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
+                        MyBehaviourEvent::Mdns(event) => self.on_mdns_event(event).await,
+                        MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
+                    };
+                    if let Some(event) = network_event {
                         return Ok(event);
                     }
                 }
