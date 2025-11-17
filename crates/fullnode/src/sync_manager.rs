@@ -8,17 +8,17 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-#[allow(dead_code)] // TODO: remove when all events are handled
+#[allow(dead_code)] // P2P-TODO: remove when all events are handled
 pub(crate) enum SyncManagerMessage {
-    // TODO: add gossip block to update known head
+    // P2P-TODO: add gossip block to update known head
     // so that we can prune some peers that are not useful
     // we may also remove ledger db import and just rely on messages from l2 syncer
     // or implement a threshold where we dont downlaod blocks if we are close to head of the peer
-    BatchProcessed(PeerId, Result<(u64, u64), anyhow::Error>), // TODO change to proper result type
+    BatchProcessed(PeerId, Result<(u64, u64), anyhow::Error>), // P2P-TODO change to proper result type
     NewPeer(PeerId),
     DisconnectPeer(PeerId),
     PeerStatus((PeerId, StatusResponse)),
-    DownloadFailed(PeerId), // TODO: propagate from network service
+    DownloadFailed(PeerId), // P2P-TODO: propagate from network service
 }
 
 enum DownloadState {
@@ -83,11 +83,11 @@ where
                         if let Err(e) = self.send_network_message(request).await {
                             error!("Failed to request status from peer {}: {}", peer_id, e);
                         } else {
-                            info!("Requested status from peer {}", peer_id); // TODO: change to debug
+                            info!("Requested status from peer {}", peer_id); // P2P-TODO: change to debug
                         }
                     }
                 }
-                // TODO: If no response from download,
+                // P2P-TODO: If no response from download,
                 // error will be handled on the network side, and error will be sent back to here
                 _ = sync_interval.tick() => {
                     if let DownloadState::Idle = self.download_state {
@@ -111,15 +111,15 @@ where
                                 start: ds_start,
                                 end: ds_end,
                             } => {
-                                // TODO: alt check ds_end > end: ok
+                                // P2P-TODO: alt check ds_end > end: ok
                                 if start == ds_start && end == ds_end {
                                     self.download_state = DownloadState::Idle;
                                 } else {
-                                    // TODO: handle unexpected range
+                                    // P2P-TODO: handle unexpected range
                                 }
-                                // TODO: handle unexpected peer_id
+                                // P2P-TODO: handle unexpected peer_id
                             }
-                            _ => {} // TODO: handle unexpected state
+                            _ => {} // P2P-TODO: handle unexpected state
                         }
                     }
                     Err(_e) => {
@@ -131,7 +131,7 @@ where
                 self.peer_states.insert(peer_id, None);
             }
             SyncManagerMessage::DisconnectPeer(peer_id) => {
-                // TODO: handle ongoing download if from this peer
+                // P2P-TODO: handle ongoing download if from this peer
                 self.peer_states.remove(&peer_id);
             }
             SyncManagerMessage::PeerStatus((peer_id, status)) => {
@@ -145,7 +145,7 @@ where
 
     async fn download_from_best_peer(&mut self) -> anyhow::Result<()> {
         let head_block = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
-        // TODO: handle pruned blocks
+        // P2P-TODO: handle pruned blocks
 
         // filter peers such that:
         // - have status
@@ -161,12 +161,12 @@ where
 
         let Some((peer_id, status)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
-            // TODO: slash some peers here
+            // P2P-TODO: slash some peers here
             return Ok(());
         };
         let start = head_block + 1;
         let end = (start + self.sync_blocks_count - 1).min(status.head_block);
-        // TODO: dynamically change sync blocks count if there is response errors
+        // P2P-TODO: dynamically change sync blocks count if there is response errors
 
         let request = NetworkRequest::GetL2BlockRange {
             peer_id,

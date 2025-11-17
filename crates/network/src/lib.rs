@@ -29,7 +29,7 @@ struct MyBehaviour {
     eth2_rpc: rpc::Eth2Behaviour,
 }
 
-#[allow(dead_code)] // TODO: remove when periodic check on outbound requests is implemented
+#[allow(dead_code)] // P2P-TODO: remove when periodic check on outbound requests is implemented
 struct OutboundRequest {
     peer_id: PeerId,
     timestamp: Instant,
@@ -38,7 +38,7 @@ struct OutboundRequest {
 struct Network {
     swarm: Swarm<MyBehaviour>,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
-    pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>,
+    pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>, // P2P-TODO: rm this, handle requestresponse outbound failure
 }
 
 impl Network {
@@ -98,6 +98,8 @@ impl Network {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
         let dial_addr = network_config.dial_addr;
+
+        // P2P-TODO: implement for multiple addresses
         // Dial the peer identified by the multi-address given as the second
         // command-line argument, if any.
         if let Some(addr) = dial_addr.as_ref() {
@@ -117,10 +119,11 @@ impl Network {
         let swarm = &mut self.swarm;
 
         loop {
-            select! {
+            select! { // P2P-TODO: is this select necessary?
                 event = swarm.select_next_some() => match event {
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                         let mut ids = vec![];
+                        // P2P-TODO: filter new peers based on history
                         for (peer_id, _multiaddr) in list {
                             info!("mDNS discovered a new peer: {peer_id}");
                             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
@@ -128,6 +131,7 @@ impl Network {
                         }
                         return Ok(NetworkEvent::NewPeers(ids));
                     },
+                    // P2P-TODO: should we do remove peers on expired?
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                         for (peer_id, _multiaddr) in list {
                             info!("mDNS discover peer has expired: {peer_id}");
@@ -139,13 +143,14 @@ impl Network {
                         message_id: _id,
                         message,
                     })) => {
-                        // TODO: research gossipsub broadcast guarentees
-                        // TODO: who to slash for bad messages, propagation source or the original sender?
-                        let GossipsubMessage { data, .. } = message; // TODO: consider handling topic/peer_id/sequence_number
+                        // P2P-TODO: research gossipsub broadcast guarentees
+                        // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
+                        let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
                         // try to deserialize the message to L2BlockResponse using serde
                         let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
                             Ok(msg) => msg,
                             Err(e) => {
+                                // P2P-TODO: slashing?
                                 error!("Failed to deserialize gossipsub message from peer {peer_id}: {e:?}");
                                 continue;
                             }
@@ -158,7 +163,7 @@ impl Network {
                             request_response::Message::Request { request_id, request, channel } => {
                                 self.pending_inbound_requests.insert(request_id, channel);
                                 // send the request to the upper layer, which will call send_rpc_response once ready
-                                // TODO: consider using peer_id here
+                                // P2P-TODO: consider using peer_id here
                                 return Ok(NetworkEvent::RequestReceived {
                                     request_id,
                                     request,
@@ -173,7 +178,7 @@ impl Network {
                             }
                         }
                     }
-                    // TODO handle other eth2rpc events
+                    // P2P-TODO handle other eth2rpc events
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Local node is listening on {address}");
                     }
@@ -196,7 +201,7 @@ impl Network {
             .insert(request_id, outbound_request);
     }
 
-    // TODO: what happens when the response is too large?
+    // P2P-TODO: what happens when the response is too large?
     pub fn send_rpc_response(
         &mut self,
         request_id: InboundRequestId,
@@ -215,7 +220,7 @@ impl Network {
             .eth2_rpc
             .send_response(channel, response)
         {
-            // TODO: handle this error
+            // P2P-TODO: handle this error
             error!("Failed to send status response: {:?}", failed_response);
         };
         Ok(())

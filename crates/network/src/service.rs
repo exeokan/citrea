@@ -37,7 +37,7 @@ impl NetworkService {
     }
 
     pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
-        // TODO: parameterize channel size
+        // P2P-TODO: parameterize channel size
         let (response_tx, mut response_rx) = mpsc::channel(100);
         loop {
             tokio::select! {
@@ -75,14 +75,15 @@ impl NetworkService {
                                 error!("Failed to notify L2 syncer of gossiped block from peer {}: {:?}", peer_id, e);
                             }
                         }
-                        _ => {
-                            info!("Received other network event");
+                        // P2P-TODO: send to l2 syncer
+                        NetworkEvent::DisconnectPeer(_peer_id) => {
+                            unimplemented!();
                         }
                     }
                 }
                 Some((request_id, result)) = response_rx.recv() => {
                     match result {
-                        // TODO: propagate the error to the caller peer
+                        // P2P-TODO: propagate the error to the caller peer
                         Ok(response) => {
                             if let Err(e) = self.network.send_rpc_response(request_id, response) {
                                 error!("Error sending RPC response: {e:?}");
@@ -106,6 +107,7 @@ impl NetworkService {
             NetworkRequest::PublishMessage { topic, message } => {
                 self.network.publish_message(&topic, message);
             }
+            // P2P-TODO: add rpc endpoint for these
             NetworkRequest::AddPeer(_peer_id) => {
                 unimplemented!();
             }
@@ -122,6 +124,7 @@ impl NetworkService {
                     Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }),
                 );
             }
+            // P2P-TODO: add slashing
             NetworkRequest::ReportPeer(_peer_id) => {
                 unimplemented!();
             }
@@ -135,7 +138,7 @@ impl NetworkService {
         match request {
             Eth2Request::Status => {
                 // Handle status request
-                // TODO: Implement proper status response
+                // P2P-TODO: Implement proper status response
                 let last_pruned_block = ledger_db.get_last_pruned_l2_height()?;
                 let head_block = LedgerRpcProvider::get_head_l2_block_height(ledger_db)?;
                 Ok(Eth2Response::Status(StatusResponse {
@@ -180,7 +183,7 @@ impl NetworkService {
     }
 }
 
-// TODO: Fix error/response type
+// P2P-TODO: Fix error/response type
 pub fn l2_blocks_by_range(
     ledger_db: &LedgerDB,
     start: u64,
@@ -188,7 +191,7 @@ pub fn l2_blocks_by_range(
 ) -> Result<Vec<L2BlockResponse>> {
     let diff = end - start;
 
-    // TODO: Make this configurable
+    // P2P-TODO: Make this configurable
     if diff > 1000 {
         return Err(anyhow::anyhow!(
             "Requested block range too large. Max range is 1000 blocks"

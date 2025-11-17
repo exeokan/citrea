@@ -151,7 +151,7 @@ where
             manager_rx,
             self.network_request_tx.clone(),
             self.sync_blocks_count,
-            // TODO: make these configurable
+            // P2P-TODO: make these configurable
             Duration::from_secs(5),
             Duration::from_secs(1),
         );
@@ -180,9 +180,9 @@ where
     async fn process_l2_block(
         &mut self,
         l2_block_response: &L2BlockResponse,
-    ) -> anyhow::Result<()> { // TODO: return custom error, slash depending on it, 
+    ) -> anyhow::Result<()> { // P2P-TODO: return custom error, slash depending on it, 
         // and continue exponential backoff depending on error type
-        let _l2_lock = self.backup_manager.start_l2_processing().await; // TODO: is this safe?
+        let _l2_lock = self.backup_manager.start_l2_processing().await; // P2P-TODO: is this safe?
         let start = std::time::Instant::now();
 
         let applied = apply_l2_block(
@@ -227,7 +227,7 @@ where
         event: L2SyncMessage,
         manager_tx: &mpsc::Sender<SyncManagerMessage>,
     ) {
-        // TODO: propagate errors
+        // P2P-TODO: propagate errors
         match event {
             L2SyncMessage::BlockBatch(peer_id, l2_blocks) => {
                 let start_height = l2_blocks
@@ -251,7 +251,7 @@ where
                     );
                     return;
                 }
-                // TODO: Either penalize here or in the sync manager
+                // P2P-TODO: Either penalize here or in the sync manager
                 manager_tx
                     .send(SyncManagerMessage::BatchProcessed(
                         peer_id,
@@ -280,8 +280,8 @@ where
                     .expect("DB error")
                     .unwrap_or(0);
 
-                // TODO: perform more checks here regarding the block, even if we can't process it fully
-                // TODO: research propagating gossiped blocks further
+                // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
+                // P2P-TODO: research propagating gossiped blocks further
                 if height == head_height + 1 {
                     if let Err(e) = self.process_l2_blocks_with_backoff(vec![block]).await {
                         error!(

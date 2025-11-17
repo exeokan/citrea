@@ -19,7 +19,7 @@ pub(crate) enum Eth2Request {
 pub struct StatusResponse {
     pub head_block: u64,
     pub last_pruned_block: Option<u64>,
-    // TODO: add include_tx_body here
+    // P2P-TODO: add include_tx_body here
     // and dont pull blocks from this peer/ disconnect if necessary
 }
 
@@ -41,7 +41,7 @@ pub enum NetworkRequest {
         start: u64,
         end: u64,
     },
-    ReportPeer(PeerId), // TODO: add degree/reason
+    ReportPeer(PeerId), // P2P-TODO: add degree/reason
     GetPeerStatus(PeerId),
 }
 
@@ -53,7 +53,7 @@ pub enum L2SyncMessage {
     PeerStatus(PeerId, StatusResponse),
 }
 
-#[allow(dead_code)] // TODO: remove when all events are handled
+#[allow(dead_code)] // P2P-TODO: remove when all events are handled
 pub(crate) enum NetworkEvent {
     GossipBlock(PeerId, L2BlockResponse),
     RequestReceived {
