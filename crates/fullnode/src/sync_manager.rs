@@ -24,7 +24,7 @@ pub(crate) enum SyncManagerMessage {
     // P2P-TODO: add gossip block to update known head
     // so that we can prune some peers that are not useful
     // we may also remove ledger db import and just rely on messages from l2 syncer
-    // or implement a threshold where we dont downlaod blocks if we are close to head of the peer
+    // or implement a threshold where we dont download blocks if we are close to head of the peer
     NewPeer(PeerId),
     DisconnectedPeer(PeerId),
     PeerStatus((PeerId, StatusResponse)),

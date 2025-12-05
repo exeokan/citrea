@@ -213,7 +213,7 @@ impl Network {
                 message_id: _id,
                 message,
             } => {
-                // P2P-TODO: research gossipsub broadcast guarentees
+                // P2P-TODO: research gossipsub broadcast guarantees
                 let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
                 let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
                     Ok(msg) => msg,
