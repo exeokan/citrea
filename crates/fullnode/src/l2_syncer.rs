@@ -13,6 +13,7 @@ use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
 use citrea_common::l2::{apply_l2_block, commit_l2_block};
 use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest};
+use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::types::L2BlockHash;
 use citrea_stf::runtime::CitreaRuntime;
 use libp2p::PeerId;
@@ -20,6 +21,7 @@ use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::SharedLedgerOps;
 use sov_keys::default_signature::K256PublicKey;
 use sov_modules_api::default_context::DefaultContext;
+use sov_modules_api::L2Block;
 use sov_modules_stf_blueprint::StfBlueprint;
 use sov_prover_storage_manager::ProverStorageManager;
 use sov_rollup_interface::fork::ForkManager;
@@ -228,7 +230,6 @@ where
         event: L2SyncMessage,
         manager_tx: &mpsc::Sender<SyncManagerMessage>,
     ) {
-        // P2P-TODO: propagate errors
         match event {
             L2SyncMessage::BlockBatch(peer_id, l2_blocks) => {
                 let start_height = l2_blocks
@@ -294,9 +295,29 @@ where
         }
     }
 
-    async fn on_gossip_block(&mut self, peer_id: PeerId, block: L2BlockResponse) {
+    async fn on_gossip_block(&mut self, peer_id: PeerId, l2_block_response: L2BlockResponse) {
         debug!("Received gossiped L2 block from peer {}", peer_id);
-        let height: u64 = block.header.height.to();
+
+        let l2_block: L2Block = match l2_block_response.clone().try_into() {
+            Ok(block) => block,
+            Err(e) => {
+                error!("Failed to convert L2BlockResponse to L2Block from peer {}: {}", peer_id, e);
+                // P2P-TODO: slash peer
+                return;
+            }
+        };
+        let height = l2_block.height();
+        let current_spec = fork_from_block_number(height).spec_id;
+
+        // Verify block, slash peer if invalid
+        if let Err(_) = self
+            .stf
+            .verify_l2_block(&l2_block, &self.sequencer_pub_key, current_spec)
+        {
+            // P2P-TODO: slash peer
+            return;
+        }
+
         let head_height = self
             .ledger_db
             .get_head_l2_block_height()
@@ -306,7 +327,7 @@ where
         // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
         // P2P-TODO: research propagating gossiped blocks further
         if height == head_height + 1 {
-            if let Err(e) = self.process_l2_blocks_with_backoff(vec![block]).await {
+            if let Err(e) = self.process_l2_blocks_with_backoff(vec![l2_block_response]).await {
                 error!(
                     "Failed to process gossiped L2 block at height {}: {}",
                     height, e
