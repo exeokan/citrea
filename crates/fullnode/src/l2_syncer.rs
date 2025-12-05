@@ -12,9 +12,10 @@ use borsh::BorshDeserialize;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
 use citrea_common::l2::{apply_l2_block, commit_l2_block};
-use citrea_network::types::{L2SyncMessage, NetworkRequest};
+use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest};
 use citrea_primitives::types::L2BlockHash;
 use citrea_stf::runtime::CitreaRuntime;
+use libp2p::PeerId;
 use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::SharedLedgerOps;
 use sov_keys::default_signature::K256PublicKey;
@@ -27,10 +28,10 @@ use sov_rollup_interface::services::da::DaService;
 use sov_rollup_interface::zk::StorageRootHash;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc, Mutex};
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use crate::metrics::FULLNODE_METRICS;
-use crate::sync_manager::{SyncManager, SyncManagerMessage};
+use crate::sync_manager::{BatchProcessingError, DownloadInfo, SyncManager, SyncManagerMessage};
 use crate::{InitParams, RollupPublicKeys, RunnerConfig};
 
 /// Component responsible for synchronizing and processing L2 blocks
@@ -243,19 +244,11 @@ where
                     .height
                     .to();
 
-                // While syncing, we'd like to process L2 blocks as they come without any delays.
-                if let Err(e) = self.process_l2_blocks_with_backoff(l2_blocks).await {
-                    error!(
-                        "Failed to process L2 block batch from peer {}: {}",
-                        peer_id, e
-                    );
-                    return;
-                }
-                // P2P-TODO: Either penalize here or in the sync manager
+                let processing_result = self.process_l2_blocks_with_backoff(l2_blocks).await.map_err(|_| BatchProcessingError::ValidationError);
                 manager_tx
                     .send(SyncManagerMessage::BatchProcessed(
-                        peer_id,
-                        Ok((start_height, end_height)),
+                        DownloadInfo { peer_id, start: start_height, end: end_height },
+                        processing_result,
                     ))
                     .await
                     .expect("SyncManager receiver dropped");
@@ -272,36 +265,62 @@ where
                     .await
                     .expect("SyncManager receiver dropped");
             }
-            L2SyncMessage::GossipBlock(_peer_id, block) => {
-                let height: u64 = block.header.height.to();
-                let head_height = self
-                    .ledger_db
-                    .get_head_l2_block_height()
-                    .expect("DB error")
-                    .unwrap_or(0);
-
-                // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
-                // P2P-TODO: research propagating gossiped blocks further
-                if height == head_height + 1 {
-                    if let Err(e) = self.process_l2_blocks_with_backoff(vec![block]).await {
-                        error!(
-                            "Failed to process gossiped L2 block at height {}: {}",
-                            height, e
-                        );
-                    }
-                } else {
-                    info!(
-                        "Ignoring gossiped L2 block at height {}: current head is {}",
-                        height, head_height
-                    );
-                }
-                
+            L2SyncMessage::GossipBlock(peer_id, block) => {
+                self.on_gossip_block(peer_id, block).await;
             }
-            _ => unimplemented!("Other L2SyncMessage variants are not implemented yet"),
+            L2SyncMessage::DisconnectedPeer(peer_id) => {
+                manager_tx
+                    .send(SyncManagerMessage::DisconnectedPeer(peer_id))
+                    .await
+                    .expect("SyncManager receiver dropped");
+            }
+            L2SyncMessage::RPCFailed { peer_id, request } => {
+                match request {
+                    Eth2Request::Status => {
+                        // P2P-TODO: slash lightly
+                        debug!("Ignoring failed status request to peer {}", peer_id);
+                    }
+                    Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
+                        manager_tx
+                            .send(SyncManagerMessage::BatchProcessed(
+                                DownloadInfo { peer_id, start, end },
+                                Err(BatchProcessingError::DownloadFailed),
+                            ))
+                            .await
+                            .expect("SyncManager receiver dropped");
+                    }
+                }
+            }
         }
     }
 
-    pub async fn process_l2_blocks_with_backoff(
+    async fn on_gossip_block(&mut self, peer_id: PeerId, block: L2BlockResponse) {
+        debug!("Received gossiped L2 block from peer {}", peer_id);
+        let height: u64 = block.header.height.to();
+        let head_height = self
+            .ledger_db
+            .get_head_l2_block_height()
+            .expect("DB error")
+            .unwrap_or(0);
+
+        // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
+        // P2P-TODO: research propagating gossiped blocks further
+        if height == head_height + 1 {
+            if let Err(e) = self.process_l2_blocks_with_backoff(vec![block]).await {
+                error!(
+                    "Failed to process gossiped L2 block at height {}: {}",
+                    height, e
+                );
+            }
+        } else {
+            info!(
+                "Ignoring gossiped L2 block at height {}: current head is {}",
+                height, head_height
+            );
+        }
+    }
+
+    async fn process_l2_blocks_with_backoff(
         &mut self,
         l2_blocks: Vec<L2BlockResponse>,
     ) -> anyhow::Result<()> {
