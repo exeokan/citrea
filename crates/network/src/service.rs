@@ -80,7 +80,6 @@ impl NetworkService {
                                 error!("Failed to notify L2 syncer of failed RPC to peer {}: {:?}", peer_id, e);
                             }
                         }
-                        // P2P-TODO: send to l2 syncer
                         NetworkEvent::DisconnectedPeer(peer_id) => {
                             let message = L2SyncMessage::DisconnectedPeer(peer_id);
                             if let Err(e) = self.send_l2_sync_message(message) {

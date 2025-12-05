@@ -157,7 +157,7 @@ impl Network {
             .pending_inbound_requests
             .remove(&request_id)
             .ok_or_else(|| {
-                anyhow::anyhow!("No pending inbound request found for the given request ID")
+                anyhow::anyhow!("No pending inbound request found for the request id: {request_id}")
             })?;
 
         if let Err(_failed_response) = self
