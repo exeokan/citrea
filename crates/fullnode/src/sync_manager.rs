@@ -112,7 +112,8 @@ where
                 // Set download state to idle regardless of success or failure
                 self.download_state = DownloadState::Idle;
                 if let Err(e) = result {
-                    self.on_batch_processing_error(download_info.peer_id, e).await;
+                    self.on_batch_processing_error(download_info.peer_id, e)
+                        .await;
                 } else {
                     debug!(
                         "Successfully processed L2 blocks {}-{} from peer {}",
@@ -165,13 +166,11 @@ where
             end,
         };
         self.send_network_message(request).await;
-        self.download_state = DownloadState::Syncing(
-            DownloadInfo {
-                peer_id,
-                start,
-                end,
-            }
-        );
+        self.download_state = DownloadState::Syncing(DownloadInfo {
+            peer_id,
+            start,
+            end,
+        });
         Ok(())
     }
 
@@ -182,11 +181,7 @@ where
             .expect("Network channel closed");
     }
 
-    async fn on_batch_processing_error(
-        &mut self,
-        peer_id: PeerId,
-        error: BatchProcessingError,
-    ) {
+    async fn on_batch_processing_error(&mut self, peer_id: PeerId, error: BatchProcessingError) {
         match error {
             BatchProcessingError::DownloadFailed => {
                 warn!("Download failed from peer {peer_id}");

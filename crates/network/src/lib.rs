@@ -2,18 +2,18 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
+
 use anyhow::Result;
+use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
+use gossipsub::Message as GossipsubMessage;
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-use tracing::{error, info};
-use gossipsub::Message as GossipsubMessage;
-
 use sov_rollup_interface::rpc::block::L2BlockResponse;
-use citrea_common::NetworkConfig;
+use tracing::{error, info};
 
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
 
@@ -143,8 +143,7 @@ impl Network {
             .eth2_rpc
             .send_request(&peer_id, request.clone());
 
-        self.pending_outbound_requests
-            .insert(request_id, request);
+        self.pending_outbound_requests.insert(request_id, request);
     }
 
     // P2P-TODO: what happens when the response is too large?
@@ -173,7 +172,12 @@ impl Network {
 
     pub fn publish_message(&mut self, topic: &str, message: Vec<u8>) {
         let gossipsub_topic = gossipsub::IdentTopic::new(topic);
-        if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(gossipsub_topic, message) {
+        if let Err(e) = self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(gossipsub_topic, message)
+        {
             error!("Failed to publish message: {:?}", e);
         }
     }
@@ -183,23 +187,26 @@ impl Network {
             mdns::Event::Discovered(list) => {
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discovered a new peer: {peer_id}");
-                    self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .add_explicit_peer(&peer_id);
                 }
-            },
+            }
             mdns::Event::Expired(list) => {
                 for (peer_id, _multiaddr) in list {
                     info!("mDNS discover peer has expired: {peer_id}");
-                    self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .remove_explicit_peer(&peer_id);
                 }
-            },
+            }
         }
         None
     }
 
-    async fn on_gossipsub_event(
-        &mut self,
-        event: gossipsub::Event,
-    ) -> Option<NetworkEvent> {
+    async fn on_gossipsub_event(&mut self, event: gossipsub::Event) -> Option<NetworkEvent> {
         match event {
             gossipsub::Event::Message {
                 propagation_source: peer_id,
@@ -232,9 +239,13 @@ impl Network {
         event: request_response::Event<Eth2Request, Eth2Response>,
     ) -> Option<NetworkEvent> {
         match event {
-            request_response::Event::Message {peer, message, .. } => {
+            request_response::Event::Message { peer, message, .. } => {
                 match message {
-                    request_response::Message::Request { request_id, request, channel } => {
+                    request_response::Message::Request {
+                        request_id,
+                        request,
+                        channel,
+                    } => {
                         self.pending_inbound_requests.insert(request_id, channel);
                         // send the request to the upper layer, which will call send_rpc_response once ready
                         // P2P-TODO: consider using peer_id here
@@ -242,8 +253,11 @@ impl Network {
                             request_id,
                             request,
                         })
-                    },
-                    request_response::Message::Response { request_id, response } => {
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
                         self.pending_outbound_requests.remove(&request_id);
                         Some(NetworkEvent::ResponseReceived {
                             peer_id: peer,
@@ -252,8 +266,11 @@ impl Network {
                     }
                 }
             }
-            request_response::Event::OutboundFailure { peer, request_id, .. } => {
-                let failed_request = self.pending_outbound_requests
+            request_response::Event::OutboundFailure {
+                peer, request_id, ..
+            } => {
+                let failed_request = self
+                    .pending_outbound_requests
                     .remove(&request_id)
                     .expect("Failed outbound request must be tracked");
                 // P2P-TODO: slashing based on error here?
@@ -265,8 +282,7 @@ impl Network {
             request_response::Event::InboundFailure { request_id, .. } => {
                 // P2P-TODO: Consider taking action on inbound failures based on error,
                 // including disconnection, and unsupported protocol
-                self.pending_inbound_requests
-                    .remove(&request_id);
+                self.pending_inbound_requests.remove(&request_id);
                 None
             }
             request_response::Event::ResponseSent { .. } => None,

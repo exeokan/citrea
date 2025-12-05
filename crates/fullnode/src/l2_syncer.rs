@@ -183,7 +183,8 @@ where
     async fn process_l2_block(
         &mut self,
         l2_block_response: &L2BlockResponse,
-    ) -> anyhow::Result<()> { // P2P-TODO: return custom error, slash depending on it, 
+    ) -> anyhow::Result<()> {
+        // P2P-TODO: return custom error, slash depending on it,
         // and continue exponential backoff depending on error type
         let _l2_lock = self.backup_manager.start_l2_processing().await; // P2P-TODO: is this safe?
         let start = std::time::Instant::now();
@@ -245,10 +246,17 @@ where
                     .height
                     .to();
 
-                let processing_result = self.process_l2_blocks_with_backoff(l2_blocks).await.map_err(|_| BatchProcessingError::ValidationError);
+                let processing_result = self
+                    .process_l2_blocks_with_backoff(l2_blocks)
+                    .await
+                    .map_err(|_| BatchProcessingError::ValidationError);
                 manager_tx
                     .send(SyncManagerMessage::BatchProcessed(
-                        DownloadInfo { peer_id, start: start_height, end: end_height },
+                        DownloadInfo {
+                            peer_id,
+                            start: start_height,
+                            end: end_height,
+                        },
                         processing_result,
                     ))
                     .await
@@ -284,7 +292,11 @@ where
                     Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
                         manager_tx
                             .send(SyncManagerMessage::BatchProcessed(
-                                DownloadInfo { peer_id, start, end },
+                                DownloadInfo {
+                                    peer_id,
+                                    start,
+                                    end,
+                                },
                                 Err(BatchProcessingError::DownloadFailed),
                             ))
                             .await
@@ -301,7 +313,10 @@ where
         let l2_block: L2Block = match l2_block_response.clone().try_into() {
             Ok(block) => block,
             Err(e) => {
-                error!("Failed to convert L2BlockResponse to L2Block from peer {}: {}", peer_id, e);
+                error!(
+                    "Failed to convert L2BlockResponse to L2Block from peer {}: {}",
+                    peer_id, e
+                );
                 // P2P-TODO: slash peer
                 return;
             }
@@ -310,9 +325,10 @@ where
         let current_spec = fork_from_block_number(height).spec_id;
 
         // Verify block, slash peer if invalid
-        if let Err(_) = self
+        if self
             .stf
             .verify_l2_block(&l2_block, &self.sequencer_pub_key, current_spec)
+            .is_err()
         {
             // P2P-TODO: slash peer
             return;
@@ -327,7 +343,10 @@ where
         // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
         // P2P-TODO: research propagating gossiped blocks further
         if height == head_height + 1 {
-            if let Err(e) = self.process_l2_blocks_with_backoff(vec![l2_block_response]).await {
+            if let Err(e) = self
+                .process_l2_blocks_with_backoff(vec![l2_block_response])
+                .await
+            {
                 error!(
                     "Failed to process gossiped L2 block at height {}: {}",
                     height, e
@@ -356,7 +375,9 @@ where
                             "Failed to process L2 block {}: {}",
                             l2_block.header.height, e
                         );
-                        let backoff_duration = backoff.next_backoff().expect("Failed to process L2 block multiple times. Killing L2Syncer...");
+                        let backoff_duration = backoff.next_backoff().expect(
+                            "Failed to process L2 block multiple times. Killing L2Syncer...",
+                        );
                         tokio::time::sleep(backoff_duration).await;
                     }
                 }

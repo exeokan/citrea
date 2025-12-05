@@ -26,7 +26,7 @@ pub struct StatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Eth2Response {
     Status(StatusResponse),
-    // P2P-TODO: use Result<Vec<L2BlockResponse>, Error> instead, 
+    // P2P-TODO: use Result<Vec<L2BlockResponse>, Error> instead,
     // Errors: invalid range, too many blocks, size limit exceeded
     BlocksByRange(Vec<L2BlockResponse>),
 }

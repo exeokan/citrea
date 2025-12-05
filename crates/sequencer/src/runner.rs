@@ -50,6 +50,7 @@ use sov_prover_storage_manager::ProverStorageManager;
 use sov_rollup_interface::block::{L2Header, SignedL2Header};
 use sov_rollup_interface::da::{BlockHeaderTrait, DaSpec};
 use sov_rollup_interface::fork::ForkManager;
+use sov_rollup_interface::rpc::LedgerRpcProvider;
 use sov_rollup_interface::services::da::DaService;
 use sov_rollup_interface::stf::{L2BlockResult, StateTransitionError};
 use sov_rollup_interface::transaction::Transaction;
@@ -61,7 +62,6 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
-use sov_rollup_interface::rpc::LedgerRpcProvider;
 
 use crate::commitment::service::CommitmentService;
 use crate::da::{da_block_monitor, get_da_block_data};
@@ -456,20 +456,22 @@ where
                     debug!("l2_block_tx is closed");
                 }
 
-                let l2_block = LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
+                let l2_block =
+                    LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
                 // serde serialization
                 // P2P-TODO: consider using a more efficient serialization method
                 let serialized_block = serde_json::to_vec(&l2_block)
                     .map_err(|e| anyhow!("Failed to serialize L2 block: {}", e))?;
                 let network_request = NetworkRequest::PublishMessage {
                     topic: "new-head".to_string(),
-                    message: serialized_block
+                    message: serialized_block,
                 };
                 // P2P-TODO: what if the channel is full?
                 // consider using tokio spawn here
                 self.network_tx
                     .send(network_request)
-                    .await.expect("Failed to send network request");
+                    .await
+                    .expect("Failed to send network request");
             }
             Err(e) => {
                 error!("Sequencer error: {}", e);
