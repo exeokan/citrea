@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use citrea_common::NetworkConfig;
@@ -15,10 +15,8 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     gossipsub, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-pub use service::NetworkService;
 use sov_rollup_interface::rpc::block::L2BlockResponse;
 use tokio::{
-    io,
     runtime::Handle,
     select,
     sync::mpsc,
@@ -260,45 +258,9 @@ impl Network {
             .behaviour_mut()
             .gossipsub
             .add_explicit_peer(&peer_id);
-        Some(NetworkEvent::NewPeers(vec![peer_id]))
+        Some(NetworkEvent::NewPeer(peer_id))
     }
 
-    // TODO: what happens when the response is too large?
-    pub fn send_rpc_response(
-        &mut self,
-        request_id: InboundRequestId,
-        response: Eth2Response,
-    ) -> anyhow::Result<()> {
-        let channel = self
-            .pending_inbound_requests
-            .remove(&request_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!("No pending inbound request found for the given request ID")
-            })?;
-
-        if let Err(failed_response) = self
-            .swarm
-            .behaviour_mut()
-            .eth2_rpc
-            .send_response(channel, response)
-        {
-            // TODO: handle this error
-            error!("Failed to send status response: {:?}", failed_response);
-        };
-        Ok(())
-    }
-
-    pub fn publish_message(&mut self, topic: &str, message: Vec<u8>) {
-        let gossipsub_topic = gossipsub::IdentTopic::new(topic);
-        if let Err(e) = self
-            .swarm
-            .behaviour_mut()
-            .gossipsub
-            .publish(gossipsub_topic, message)
-        {
-            error!("Failed to publish message: {:?}", e);
-        }
-    }
 
     pub fn send_rpc_request(&mut self, peer_id: PeerId, request: Eth2Request) {
         let request_id = self
