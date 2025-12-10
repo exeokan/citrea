@@ -1,4 +1,5 @@
-use libp2p::request_response::InboundRequestId;
+use libp2p::gossipsub::MessageAcceptance;
+use libp2p::{gossipsub::MessageId, request_response::InboundRequestId};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
@@ -45,22 +46,28 @@ pub enum NetworkRequest {
     },
     ReportPeer(PeerId), // P2P-TODO: add degree/reason
     GetPeerStatus(PeerId),
+    GossipBlockValidationResult {
+        peer_id: PeerId,
+        message_id: MessageId,
+        validation_result: MessageAcceptance,
+    },
 }
 
 pub enum L2SyncMessage {
-    GossipBlock(PeerId, L2BlockResponse),
+    GossipBlock(PeerId, L2BlockResponse, MessageId),
     BlockBatch(PeerId, Vec<L2BlockResponse>),
     NewPeer(PeerId),
     DisconnectedPeer(PeerId),
     PeerStatus(PeerId, StatusResponse),
-    RPCFailed {
-        peer_id: PeerId,
-        request: Eth2Request,
-    },
+    RPCFailed(PeerId, Eth2Request),
 }
 
 pub(crate) enum NetworkEvent {
-    GossipBlock(PeerId, L2BlockResponse),
+    GossipBlock{
+        peer_id: PeerId,
+        l2_block_response: L2BlockResponse,
+        message_id: MessageId,
+    },
     RequestReceived {
         request_id: InboundRequestId,
         request: Eth2Request,

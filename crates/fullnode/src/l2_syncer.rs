@@ -16,6 +16,7 @@ use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, Ne
 use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::types::L2BlockHash;
 use citrea_stf::runtime::CitreaRuntime;
+use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::PeerId;
 use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::SharedLedgerOps;
@@ -274,8 +275,8 @@ where
                     .await
                     .expect("SyncManager receiver dropped");
             }
-            L2SyncMessage::GossipBlock(peer_id, block) => {
-                self.on_gossip_block(peer_id, block).await;
+            L2SyncMessage::GossipBlock(peer_id, block, message_id) => {
+                self.on_gossip_block(peer_id, block, message_id).await;
             }
             L2SyncMessage::DisconnectedPeer(peer_id) => {
                 manager_tx
@@ -283,7 +284,7 @@ where
                     .await
                     .expect("SyncManager receiver dropped");
             }
-            L2SyncMessage::RPCFailed { peer_id, request } => {
+            L2SyncMessage::RPCFailed(peer_id, request) => {
                 match request {
                     Eth2Request::Status => {
                         // P2P-TODO: slash lightly
@@ -307,7 +308,7 @@ where
         }
     }
 
-    async fn on_gossip_block(&mut self, peer_id: PeerId, l2_block_response: L2BlockResponse) {
+    async fn on_gossip_block(&mut self, peer_id: PeerId, l2_block_response: L2BlockResponse, message_id: MessageId) {
         debug!("Received gossiped L2 block from peer {}", peer_id);
 
         let l2_block: L2Block = match l2_block_response.clone().try_into() {
@@ -317,7 +318,12 @@ where
                     "Failed to convert L2BlockResponse to L2Block from peer {}: {}",
                     peer_id, e
                 );
-                // P2P-TODO: slash peer
+                self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                    peer_id,
+                    message_id,
+                    validation_result: MessageAcceptance::Reject,
+                }).await;
+                // P2P-TODO: slash peer?
                 return;
             }
         };
@@ -329,10 +335,15 @@ where
             .stf
             .verify_l2_block(&l2_block, &self.sequencer_pub_key, current_spec)
             .is_err()
-        {
-            // P2P-TODO: slash peer
+        {     
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Reject,
+            }).await;
+            // P2P-TODO: slash peer?
             return;
-        }
+        };
 
         let head_height = self
             .ledger_db
@@ -340,23 +351,43 @@ where
             .expect("DB error")
             .unwrap_or(0);
 
-        // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
         // P2P-TODO: research propagating gossiped blocks further
-        if height == head_height + 1 {
-            if let Err(e) = self
-                .process_l2_blocks_with_backoff(vec![l2_block_response])
-                .await
-            {
-                error!(
-                    "Failed to process gossiped L2 block at height {}: {}",
-                    height, e
-                );
-            }
-        } else {
+        if height != head_height + 1 {
             info!(
                 "Ignoring gossiped L2 block at height {}: current head is {}",
                 height, head_height
             );
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Ignore,
+            }).await;
+            // return without processing
+            return;
+        }
+
+        // Try to process the block, 
+        if let Err(e) = self
+            .process_l2_blocks_with_backoff(vec![l2_block_response])
+            .await
+        {
+            error!(
+                "Failed to process gossiped L2 block at height {}: {}",
+                height, e
+            );
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Reject,
+            }).await;
+            // P2P-TODO: slash peer?
+        } else {
+            info!("Successfully processed gossiped L2 block at height {}", height);
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Accept,
+            }).await;
         }
     }
 
@@ -384,5 +415,12 @@ where
             }
         }
         Ok(())
+    }
+
+    async fn send_network_message(&self, request: NetworkRequest) {
+        self.network_request_tx
+            .send(request)
+            .await
+            .expect("Network channel closed");
     }
 }

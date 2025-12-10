@@ -67,15 +67,15 @@ impl NetworkService {
                                 error!("Failed to notify L2 syncer of new peer {}: {:?}", peer_id, e);
                             }
                         }
-                        NetworkEvent::GossipBlock(peer_id, block) => {
-                            let message = L2SyncMessage::GossipBlock(peer_id, block);
+                        NetworkEvent::GossipBlock { peer_id, l2_block_response, message_id } => {
+                            let message = L2SyncMessage::GossipBlock(peer_id, l2_block_response, message_id);
                             if let Err(e) = self.send_l2_sync_message(message) {
                                 error!("Failed to notify L2 syncer of gossiped block from peer {}: {:?}", peer_id, e);
                             }
                         }
                         NetworkEvent::RPCFailed { peer_id, request } => {
                             error!("RPC request {:?} to peer {} failed", request, peer_id);
-                            let message = L2SyncMessage::RPCFailed { peer_id, request };
+                            let message = L2SyncMessage::RPCFailed(peer_id, request );
                             if let Err(e) = self.send_l2_sync_message(message) {
                                 error!("Failed to notify L2 syncer of failed RPC to peer {}: {:?}", peer_id, e);
                             }
@@ -137,6 +137,9 @@ impl NetworkService {
             }
             NetworkRequest::GetPeerStatus(peer_id) => {
                 self.network.send_rpc_request(peer_id, Eth2Request::Status);
+            }
+            NetworkRequest::GossipBlockValidationResult { peer_id, message_id, validation_result } => {
+                self.network.report_message_validation_result(&peer_id, message_id, validation_result);
             }
         }
     }
