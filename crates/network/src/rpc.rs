@@ -3,11 +3,11 @@ use libp2p::StreamProtocol;
 
 use crate::types::{Eth2Request, Eth2Response};
 
-// 2. Create the behaviour using built-in JSON codec
-// TODO: consider cbor codec
+// P2P-TODO: consider cbor codec and measure performance
 pub(crate) fn create_eth2_behaviour() -> request_response::json::Behaviour<Eth2Request, Eth2Response>
 {
     let protocols = vec![
+        // P2P-TODO: change protocol names
         (
             StreamProtocol::new("/eth2/beacon_chain/req/status/1/json"),
             ProtocolSupport::Full,
@@ -17,6 +17,7 @@ pub(crate) fn create_eth2_behaviour() -> request_response::json::Behaviour<Eth2R
             ProtocolSupport::Full,
         ),
     ];
+    // P2P-TODO: consider custom config
     request_response::json::Behaviour::new(protocols, request_response::Config::default())
 }
 

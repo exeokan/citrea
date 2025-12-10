@@ -459,14 +459,14 @@ where
                 let l2_block =
                     LedgerRpcProvider::get_l2_block_by_number(&self.ledger_db, l2_height)?.unwrap();
                 // serde serialization
-                // TODO: consider using a more efficient serialization method
+                // P2P-TODO: consider using a more efficient serialization method
                 let serialized_block = serde_json::to_vec(&l2_block)
                     .map_err(|e| anyhow!("Failed to serialize L2 block: {}", e))?;
                 let network_request = NetworkRequest::PublishMessage {
                     topic: "new-head".to_string(),
                     message: serialized_block,
                 };
-                // TODO: what if the channel is full?
+                // P2P-TODO: what if the channel is full?
                 // consider using tokio spawn here
                 self.network_tx
                     .send(network_request)

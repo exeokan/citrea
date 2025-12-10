@@ -36,22 +36,18 @@ mod rpc;
 pub mod service;
 pub mod types;
 
+pub use service::NetworkService;
+
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
     eth2_rpc: rpc::Eth2Behaviour,
 }
 
-#[allow(dead_code)] // TODO: remove when periodic check on outbound requests is implemented
-struct OutboundRequest {
-    peer_id: PeerId,
-    timestamp: Instant,
-}
-
 struct Network {
     swarm: Swarm<MyBehaviour>,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
-    pending_outbound_requests: HashMap<OutboundRequestId, OutboundRequest>,
+    pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
     discovery: Option<DiscoveryService>,
     discovery_events: Option<mpsc::Receiver<Discv5Event>>,
     discovery_interval: Option<Interval>,
@@ -86,7 +82,7 @@ impl Network {
                     // signing)
                     .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
                     .build()
-                    .map_err(io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
+                    .map_err(tokio::io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
 
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
@@ -110,6 +106,8 @@ impl Network {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
         let dial_addr = network_config.dial_addr;
+
+        // P2P-TODO: implement for multiple addresses
         // Dial the peer identified by the multi-address given as the second
         // command-line argument, if any.
         if let Some(addr) = dial_addr.as_ref() {
@@ -117,6 +115,7 @@ impl Network {
             swarm.dial(remote)?;
             info!("Dialed {addr}");
         }
+
 
         let (discovery, discovery_events, discovery_interval) = if let Some(enr_key) = discovery_key
         {
@@ -171,9 +170,28 @@ impl Network {
 
             select! {
                 event = &mut swarm_future => {
-                    if let Some(network_event) = self.handle_swarm_event(event)? {
-                        return Ok(network_event);
+                    match event {
+                        SwarmEvent::Behaviour(event) => {
+                            let network_event = match event {
+                                MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
+                                MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
+                            };
+                            if let Some(event) = network_event {
+                                return Ok(event);
+                            }
+                        }
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            info!("Local node is listening on {address}");
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            return Ok(NetworkEvent::NewPeer(peer_id));
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            return Ok(NetworkEvent::DisconnectedPeer(peer_id));
+                        }
+                        _ => {}
                     }
+                
                 }
                 (event, receiver) = &mut discovery_future => {
                     if let Some(rx) = receiver {
@@ -201,64 +219,6 @@ impl Network {
                 }
             }
         }
-    }
-
-    fn handle_swarm_event(
-        &mut self,
-        event: SwarmEvent<MyBehaviourEvent>,
-    ) -> Result<Option<NetworkEvent>> {
-        match event {
-            SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                propagation_source: peer_id,
-                message_id: _,
-                message,
-            })) => {
-                let GossipsubMessage { data, .. } = message;
-                let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        error!(
-                            "Failed to deserialize gossipsub message from peer {peer_id}: {e:?}"
-                        );
-                        return Ok(None);
-                    }
-                };
-                return Ok(Some(NetworkEvent::GossipBlock(peer_id, l2_block_response)));
-            }
-            SwarmEvent::Behaviour(MyBehaviourEvent::Eth2Rpc(
-                request_response::Event::Message { peer, message, .. },
-            )) => match message {
-                request_response::Message::Request {
-                    request_id,
-                    request,
-                    channel,
-                } => {
-                    self.pending_inbound_requests.insert(request_id, channel);
-                    return Ok(Some(NetworkEvent::RequestReceived {
-                        request_id,
-                        request,
-                    }));
-                }
-                request_response::Message::Response {
-                    request_id,
-                    response,
-                } => {
-                    self.pending_outbound_requests.remove(&request_id);
-                    return Ok(Some(NetworkEvent::ResponseReceived {
-                        peer_id: peer,
-                        response,
-                    }));
-                }
-            },
-            SwarmEvent::NewListenAddr { address, .. } => {
-                info!("Local node is listening on {address}");
-                if let Some(discovery) = &self.discovery {
-                    discovery.update_socket_from_multiaddr(&address);
-                }
-            }
-            _ => {}
-        }
-        Ok(None)
     }
 
     fn handle_discovery_event(&mut self, event: Discv5Event) -> Option<NetworkEvent> {
@@ -303,19 +263,6 @@ impl Network {
         Some(NetworkEvent::NewPeers(vec![peer_id]))
     }
 
-    pub fn send_rpc_request(&mut self, peer_id: PeerId, request: Eth2Request) {
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .eth2_rpc
-            .send_request(&peer_id, request);
-
-        let timestamp = Instant::now();
-        let outbound_request = OutboundRequest { peer_id, timestamp };
-        self.pending_outbound_requests
-            .insert(request_id, outbound_request);
-    }
-
     // TODO: what happens when the response is too large?
     pub fn send_rpc_response(
         &mut self,
@@ -350,6 +297,135 @@ impl Network {
             .publish(gossipsub_topic, message)
         {
             error!("Failed to publish message: {:?}", e);
+        }
+    }
+
+    pub fn send_rpc_request(&mut self, peer_id: PeerId, request: Eth2Request) {
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .eth2_rpc
+            .send_request(&peer_id, request.clone());
+
+        self.pending_outbound_requests.insert(request_id, request);
+    }
+
+    // P2P-TODO: what happens when the response is too large?
+    pub fn send_rpc_response(
+        &mut self,
+        request_id: InboundRequestId,
+        response: Eth2Response,
+    ) -> anyhow::Result<()> {
+        let channel = self
+            .pending_inbound_requests
+            .remove(&request_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("No pending inbound request found for the request id: {request_id}")
+            })?;
+
+        if let Err(_failed_response) = self
+            .swarm
+            .behaviour_mut()
+            .eth2_rpc
+            .send_response(channel, response)
+        {
+            error!("Failed to send response, request id: {request_id}");
+        };
+        Ok(())
+    }
+
+    pub fn publish_message(&mut self, topic: &str, message: Vec<u8>) {
+        let gossipsub_topic = gossipsub::IdentTopic::new(topic);
+        if let Err(e) = self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(gossipsub_topic, message)
+        {
+            error!("Failed to publish message: {:?}", e);
+        }
+    }
+
+    async fn on_gossipsub_event(&mut self, event: gossipsub::Event) -> Option<NetworkEvent> {
+        match event {
+            gossipsub::Event::Message {
+                propagation_source: peer_id,
+                message_id: _id,
+                message,
+            } => {
+                // P2P-TODO: research gossipsub broadcast guarantees
+                let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
+                let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
+                    Ok(msg) => msg,
+                    // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
+                    Err(_) => return None,
+                };
+                Some(NetworkEvent::GossipBlock(peer_id, l2_block_response))
+            }
+            gossipsub::Event::GossipsubNotSupported { .. } => {
+                // P2P-TODO: ban peer
+                None
+            }
+            gossipsub::Event::SlowPeer { .. } => {
+                // P2P-TODO: slash peer
+                None
+            }
+            gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
+        }
+    }
+
+    async fn on_eth2_rpc_event(
+        &mut self,
+        event: request_response::Event<Eth2Request, Eth2Response>,
+    ) -> Option<NetworkEvent> {
+        match event {
+            request_response::Event::Message { peer, message, .. } => {
+                match message {
+                    request_response::Message::Request {
+                        request_id,
+                        request,
+                        channel,
+                    } => {
+                        self.pending_inbound_requests.insert(request_id, channel);
+                        // send the request to the upper layer, which will call send_rpc_response once ready
+                        // P2P-TODO: consider using peer_id here
+                        Some(NetworkEvent::RequestReceived {
+                            request_id,
+                            request,
+                        })
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        self.pending_outbound_requests.remove(&request_id);
+                        Some(NetworkEvent::ResponseReceived {
+                            peer_id: peer,
+                            response,
+                        })
+                    }
+                }
+            }
+            request_response::Event::OutboundFailure {
+                peer, request_id, ..
+            } => {
+                let failed_request = self
+                    .pending_outbound_requests
+                    .remove(&request_id)
+                    .expect("Failed outbound request must be tracked");
+                // P2P-TODO: slashing based on error here?
+                Some(NetworkEvent::RPCFailed {
+                    peer_id: peer,
+                    request: failed_request,
+                })
+            }
+            request_response::Event::InboundFailure { request_id, .. } => {
+                // P2P-TODO: Consider taking action on inbound failures based on error,
+                // including disconnection, and unsupported protocol
+                self.pending_inbound_requests.remove(&request_id);
+                None
+            }
+            request_response::Event::ResponseSent { .. } => None,
         }
     }
 }
