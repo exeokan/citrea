@@ -1,3 +1,4 @@
+use libp2p::request_response::json::codec::Codec as JsonCodec;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::StreamProtocol;
 
@@ -16,9 +17,11 @@ pub(crate) fn create_eth2_behaviour() -> request_response::json::Behaviour<Eth2R
             ProtocolSupport::Full,
         ),
     ];
-    // P2P-TODO: consider custom config
     // P2P-TODO: consider overriding max request/response sizes here
-    request_response::json::Behaviour::new(protocols, request_response::Config::default())
+    let codec = JsonCodec::default();
+    
+    // P2P-TODO: consider custom config
+    request_response::Behaviour::with_codec(codec, protocols, request_response::Config::default())
 }
 
 pub(crate) type Eth2Behaviour = request_response::json::Behaviour<Eth2Request, Eth2Response>;
