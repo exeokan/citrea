@@ -142,6 +142,7 @@ where
 
         // filter peers such that:
         // - have status
+        // - has tx bodies
         // - have head block > local head block
         let best_peer = self
             .peer_states
@@ -149,12 +150,14 @@ where
             .filter_map(|(peer_id, status_opt)| {
                 status_opt.as_ref().map(|status| (*peer_id, status))
             })
+            .filter(|(_, status)| status.has_tx_bodies)
             .filter(|(_, status)| status.head_block > head_block)
             .max_by_key(|(_, status)| status.head_block);
 
         let Some((peer_id, status)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
             // P2P-TODO: slash some peers here
+            // may be started with peers that don't have tx bodies
             return Ok(());
         };
         let start = head_block + 1;
