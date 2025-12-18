@@ -18,6 +18,7 @@ pub struct NetworkService {
     ledger_db: LedgerDB,
     request_rx: mpsc::Receiver<NetworkRequest>,
     l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
+    has_tx_bodies: bool,
 }
 
 impl NetworkService {
@@ -26,6 +27,7 @@ impl NetworkService {
         ledger_db: LedgerDB,
         request_rx: mpsc::Receiver<NetworkRequest>,
         l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
+        has_tx_bodies: bool,
     ) -> Result<Self> {
         let network = Network::build(network_config).context("Failed to build network")?;
         Ok(Self {
@@ -33,6 +35,7 @@ impl NetworkService {
             ledger_db,
             request_rx,
             l2_sync_tx,
+            has_tx_bodies,
         })
     }
 
@@ -52,7 +55,7 @@ impl NetworkService {
                             let tx = response_tx.clone();
                             // don't block the event loop
                             tokio::spawn(async move {
-                                let result = Self::on_inbound_request(&ledger_db, request);
+                                let result = Self::on_inbound_request(&ledger_db, request, self.has_tx_bodies);
                                 let _ = tx.send((request_id, result)).await;
                             });
                         }
@@ -144,16 +147,16 @@ impl NetworkService {
         }
     }
 
-    fn on_inbound_request(ledger_db: &LedgerDB, request: Eth2Request) -> Result<Eth2Response> {
+    fn on_inbound_request(ledger_db: &LedgerDB, request: Eth2Request, has_tx_bodies: bool) -> Result<Eth2Response> {
         match request {
             Eth2Request::Status => {
                 // Handle status request
-                // P2P-TODO: Implement proper status response
                 let last_pruned_block = ledger_db.get_last_pruned_l2_height()?;
                 let head_block = LedgerRpcProvider::get_head_l2_block_height(ledger_db)?;
                 Ok(Eth2Response::Status(StatusResponse {
                     head_block,
                     last_pruned_block,
+                    has_tx_bodies,
                 }))
             }
             Eth2Request::BlocksByRange(blocks_request) => {
