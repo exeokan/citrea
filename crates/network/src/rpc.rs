@@ -7,17 +7,17 @@ use crate::types::{Eth2Request, Eth2Response};
 pub(crate) fn create_eth2_behaviour() -> request_response::json::Behaviour<Eth2Request, Eth2Response>
 {
     let protocols = vec![
-        // P2P-TODO: change protocol names
         (
-            StreamProtocol::new("/eth2/beacon_chain/req/status/1/json"),
+            StreamProtocol::new("/eth2/req/status/1/json"),
             ProtocolSupport::Full,
         ),
         (
-            StreamProtocol::new("/eth2/beacon_chain/req/beacon_blocks_by_range/2/json"),
+            StreamProtocol::new("/eth2/req/blocks_by_range/2/json"),
             ProtocolSupport::Full,
         ),
     ];
     // P2P-TODO: consider custom config
+    // P2P-TODO: consider overriding max request/response sizes here
     request_response::json::Behaviour::new(protocols, request_response::Config::default())
 }
 
