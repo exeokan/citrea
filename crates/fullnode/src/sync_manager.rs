@@ -19,7 +19,6 @@ pub enum BatchProcessingError {
     ValidationError,
 }
 
-#[allow(dead_code)] // P2P-TODO: remove when all events are handled
 pub(crate) enum SyncManagerMessage {
     // P2P-TODO: add gossip block to update known head
     // so that we can prune some peers that are not useful
@@ -119,6 +118,9 @@ where
                         "Successfully processed L2 blocks {}-{} from peer {}",
                         download_info.start, download_info.end, download_info.peer_id
                     );
+                    if let Err(e) = self.download_from_best_peer().await {
+                        error!("Failed to download from best peer: {}", e);
+                    }
                 }
             }
             SyncManagerMessage::NewPeer(peer_id) => {
