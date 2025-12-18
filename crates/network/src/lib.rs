@@ -214,11 +214,9 @@ impl Network {
                 message_id,
                 message,
             } => {
-                // P2P-TODO: research gossipsub broadcast guarantees
-                let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
+                let GossipsubMessage { data, .. } = message;
                 let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
                     Ok(msg) => msg,
-                    // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
                     Err(_) => {
                         self.report_message_validation_result(&propagation_source, message_id, MessageAcceptance::Reject);
                         return None;
@@ -298,8 +296,7 @@ impl Network {
     }
 
     /// Informs the gossipsub about the result of a message validation.
-    /// If the message is valid it will get propagated by gossipsub. (P2P-TODO: how does this work?)
-    /// P2P-TODO: call this from network on bad gossip blocks
+    /// If the message is valid it will get propagated by gossipsub.
     pub fn report_message_validation_result(
         &mut self,
         propagation_source: &PeerId,

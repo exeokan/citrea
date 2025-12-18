@@ -351,7 +351,7 @@ where
             .expect("DB error")
             .unwrap_or(0);
 
-        // P2P-TODO: research propagating gossiped blocks further
+        // P2P-TODO: more checks on block height: if too old, reject and slash
         if height != head_height + 1 {
             info!(
                 "Ignoring gossiped L2 block at height {}: current head is {}",
@@ -360,7 +360,7 @@ where
             self.send_network_message(NetworkRequest::GossipBlockValidationResult {
                 peer_id,
                 message_id,
-                validation_result: MessageAcceptance::Ignore,
+                validation_result: MessageAcceptance::Accept, // propagate message
             }).await;
             // return without processing
             return;
