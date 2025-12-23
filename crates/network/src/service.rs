@@ -202,6 +202,11 @@ pub fn l2_blocks_by_range(
     start: u64,
     end: u64,
 ) -> Result<Vec<L2BlockResponse>> {
+    if end < start {
+        return Err(anyhow::anyhow!(
+            "Invalid range"
+        ));
+    }
     let diff = end - start;
 
     // P2P-TODO: Make this configurable
@@ -211,6 +216,12 @@ pub fn l2_blocks_by_range(
         ));
     }
 
+
+    let head_block = LedgerRpcProvider::get_head_l2_block_height(ledger_db)?;
+    let end = end.min(head_block);
+        
+    // P2P-TODO: check if start > pruned && end <= head
+    // return error
     ledger_db
         .get_l2_blocks_range(start, end)?
         .into_iter()
