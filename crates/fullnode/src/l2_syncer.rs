@@ -345,6 +345,12 @@ where
             return;
         };
 
+        self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+            peer_id,
+            message_id,
+            validation_result: MessageAcceptance::Accept, // propagate message
+        }).await;
+        
         let head_height = self
             .ledger_db
             .get_head_l2_block_height()
@@ -357,38 +363,13 @@ where
                 "Ignoring gossiped L2 block at height {}: current head is {}",
                 height, head_height
             );
-            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
-                peer_id,
-                message_id,
-                validation_result: MessageAcceptance::Accept, // propagate message
-            }).await;
-            // return without processing
             return;
         }
 
-        // Try to process the block, 
-        if let Err(e) = self
+        self
             .process_l2_blocks_with_backoff(vec![l2_block_response])
-            .await
-        {
-            error!(
-                "Failed to process gossiped L2 block at height {}: {}",
-                height, e
-            );
-            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
-                peer_id,
-                message_id,
-                validation_result: MessageAcceptance::Reject,
-            }).await;
-            // P2P-TODO: slash peer?
-        } else {
-            info!("Successfully processed gossiped L2 block at height {}", height);
-            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
-                peer_id,
-                message_id,
-                validation_result: MessageAcceptance::Accept,
-            }).await;
-        }
+            .await;
+        info!("Successfully processed gossiped L2 block at height {}", height);
     }
 
     async fn process_l2_blocks_with_backoff(
