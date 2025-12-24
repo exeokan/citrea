@@ -223,8 +223,7 @@ where
         let state_root = applied.state_root;
         let block_size = applied.block_size;
 
-        commit_l2_block(&self.ledger_db, applied)
-            .map_err(L2BlockProcessingError::Other)?;
+        commit_l2_block(&self.ledger_db, applied).map_err(L2BlockProcessingError::Other)?;
 
         let process_duration = std::time::Instant::now()
             .saturating_duration_since(start)
@@ -324,7 +323,12 @@ where
         }
     }
 
-    async fn on_gossip_block(&mut self, peer_id: PeerId, l2_block_response: L2BlockResponse, message_id: MessageId) {
+    async fn on_gossip_block(
+        &mut self,
+        peer_id: PeerId,
+        l2_block_response: L2BlockResponse,
+        message_id: MessageId,
+    ) {
         debug!("Received gossiped L2 block from peer {}", peer_id);
 
         let l2_block: L2Block = match l2_block_response.clone().try_into() {
@@ -338,7 +342,8 @@ where
                     peer_id,
                     message_id,
                     validation_result: MessageAcceptance::Reject,
-                }).await;
+                })
+                .await;
                 // P2P-TODO: slash peer?
                 return;
             }
@@ -351,12 +356,13 @@ where
             .stf
             .verify_l2_block(&l2_block, &self.sequencer_pub_key, current_spec)
             .is_err()
-        {     
+        {
             self.send_network_message(NetworkRequest::GossipBlockValidationResult {
                 peer_id,
                 message_id,
                 validation_result: MessageAcceptance::Reject,
-            }).await;
+            })
+            .await;
             // P2P-TODO: slash peer?
             return;
         };
@@ -365,8 +371,9 @@ where
             peer_id,
             message_id,
             validation_result: MessageAcceptance::Accept, // propagate message
-        }).await;
-        
+        })
+        .await;
+
         let head_height = self
             .ledger_db
             .get_head_l2_block_height()
@@ -382,11 +389,13 @@ where
             return;
         }
 
-        self
-            .process_l2_blocks_with_backoff(vec![l2_block_response])
+        self.process_l2_blocks_with_backoff(vec![l2_block_response])
             .await
             .expect("Failed to process gossiped L2 block"); // P2P-TODO: slash depending on the error
-        info!("Successfully processed gossiped L2 block at height {}", height);
+        info!(
+            "Successfully processed gossiped L2 block at height {}",
+            height
+        );
     }
 
     async fn process_l2_blocks_with_backoff(

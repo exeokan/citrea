@@ -1,5 +1,5 @@
-use libp2p::gossipsub::MessageAcceptance;
-use libp2p::{gossipsub::MessageId, request_response::InboundRequestId};
+use libp2p::gossipsub::{MessageAcceptance, MessageId};
+use libp2p::request_response::InboundRequestId;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
@@ -62,7 +62,7 @@ pub enum L2SyncMessage {
 }
 
 pub(crate) enum NetworkEvent {
-    GossipBlock{
+    GossipBlock {
         peer_id: PeerId,
         l2_block_response: L2BlockResponse,
         message_id: MessageId,

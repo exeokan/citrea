@@ -218,9 +218,13 @@ impl Network {
                 let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
                     Ok(msg) => msg,
                     Err(_) => {
-                        self.report_message_validation_result(&propagation_source, message_id, MessageAcceptance::Reject);
+                        self.report_message_validation_result(
+                            &propagation_source,
+                            message_id,
+                            MessageAcceptance::Reject,
+                        );
                         return None;
-                    },
+                    }
                 };
                 Some(NetworkEvent::GossipBlock {
                     peer_id: propagation_source,
@@ -303,10 +307,9 @@ impl Network {
         message_id: MessageId,
         validation_result: MessageAcceptance,
     ) {
-        self.swarm.behaviour_mut().gossipsub.report_message_validation_result(
-            &message_id,
-            propagation_source,
-            validation_result,
-        );
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .report_message_validation_result(&message_id, propagation_source, validation_result);
     }
 }

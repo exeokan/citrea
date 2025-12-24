@@ -141,13 +141,25 @@ impl NetworkService {
             NetworkRequest::GetPeerStatus(peer_id) => {
                 self.network.send_rpc_request(peer_id, Eth2Request::Status);
             }
-            NetworkRequest::GossipBlockValidationResult { peer_id, message_id, validation_result } => {
-                self.network.report_message_validation_result(&peer_id, message_id, validation_result);
+            NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result,
+            } => {
+                self.network.report_message_validation_result(
+                    &peer_id,
+                    message_id,
+                    validation_result,
+                );
             }
         }
     }
 
-    fn on_inbound_request(ledger_db: &LedgerDB, request: Eth2Request, has_tx_bodies: bool) -> Result<Eth2Response> {
+    fn on_inbound_request(
+        ledger_db: &LedgerDB,
+        request: Eth2Request,
+        has_tx_bodies: bool,
+    ) -> Result<Eth2Response> {
         match request {
             Eth2Request::Status => {
                 // Handle status request
@@ -203,9 +215,7 @@ pub fn l2_blocks_by_range(
     end: u64,
 ) -> Result<Vec<L2BlockResponse>> {
     if end < start {
-        return Err(anyhow::anyhow!(
-            "Invalid range"
-        ));
+        return Err(anyhow::anyhow!("Invalid range"));
     }
     let diff = end - start;
 
@@ -216,10 +226,9 @@ pub fn l2_blocks_by_range(
         ));
     }
 
-
     let head_block = LedgerRpcProvider::get_head_l2_block_height(ledger_db)?;
     let end = end.min(head_block);
-        
+
     // P2P-TODO: check if start > pruned && end <= head
     // return error
     ledger_db

@@ -19,7 +19,7 @@ pub(crate) fn create_eth2_behaviour() -> request_response::json::Behaviour<Eth2R
     ];
     // P2P-TODO: consider overriding max request/response sizes here
     let codec = JsonCodec::default();
-    
+
     // P2P-TODO: consider custom config
     request_response::Behaviour::with_codec(codec, protocols, request_response::Config::default())
 }

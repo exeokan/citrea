@@ -158,9 +158,11 @@ where
             })
             .filter(|(_, status)| status.has_tx_bodies)
             .filter(|(_, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
-            .filter(|(_, status)| 
-                status.last_pruned_block.map_or(true, |pruned_height| pruned_height <= head_block )
-            )
+            .filter(|(_, status)| {
+                status
+                    .last_pruned_block
+                    .is_none_or(|pruned_height| pruned_height <= head_block)
+            })
             .max_by_key(|(_, status)| status.head_block);
 
         let Some((peer_id, _)) = best_peer else {

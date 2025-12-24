@@ -97,7 +97,9 @@ pub async fn apply_l2_block<Da: DaService, DB: SharedLedgerOps>(
 
     // Register this new block with the fork manager to active
     // the new fork on the next block.
-    fork_manager.register_block(l2_height).map_err(ApplyL2BlockError::Other)?;
+    fork_manager
+        .register_block(l2_height)
+        .map_err(ApplyL2BlockError::Other)?;
     let current_spec = fork_manager.active_fork().spec_id;
 
     let l2_block: L2Block = l2_block_response
@@ -126,14 +128,18 @@ pub async fn apply_l2_block<Da: DaService, DB: SharedLedgerOps>(
             Default::default(),
             Default::default(),
             &l2_block,
-        ).map_err(ApplyL2BlockError::STF)?
+        )
+        .map_err(ApplyL2BlockError::STF)?
     };
 
     let next_state_root = l2_block_result.state_root_transition.final_root;
     // Check if post state root is the same as the one in the l2 block
     if next_state_root.as_ref().to_vec() != l2_block.state_root() {
-        Err(anyhow::anyhow!("Post state root mismatch at height: {}", l2_height))
-            .map_err(ApplyL2BlockError::Other)?
+        Err(anyhow::anyhow!(
+            "Post state root mismatch at height: {}",
+            l2_height
+        ))
+        .map_err(ApplyL2BlockError::Other)?
     }
 
     storage_manager.finalize_storage(l2_block_result.change_set);
