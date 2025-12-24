@@ -368,7 +368,8 @@ where
 
         self
             .process_l2_blocks_with_backoff(vec![l2_block_response])
-            .await;
+            .await
+            .expect("Failed to process gossiped L2 block"); // P2P-TODO: slash depending on the error
         info!("Successfully processed gossiped L2 block at height {}", height);
     }
 
