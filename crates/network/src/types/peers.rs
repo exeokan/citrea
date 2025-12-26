@@ -11,15 +11,10 @@ pub const SCORE_HALFLIFE: Duration = Duration::from_secs(600);
 /// The number of seconds we ban a peer for before their score begins to decay.
 const BANNED_BEFORE_DECAY: Duration = Duration::from_secs(12 * 3600); // 12 hours
 
+#[derive(Default)]
 pub struct Score {
     val: f32,
     banned_at: Option<Instant>,
-}
-
-impl Default for Score {
-    fn default() -> Self {
-        Self { val: 0.0, banned_at: None }
-    }
 }
 
 impl Score {
@@ -70,6 +65,7 @@ pub struct PeerStatus {
     pub has_tx_bodies: bool,
 }
 
+#[derive(Default)]
 pub struct PeerInfo {
     pub score: Score,
     pub status: Option<PeerStatus>,

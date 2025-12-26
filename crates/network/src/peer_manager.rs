@@ -63,6 +63,23 @@ impl PeerManager {
         }
     }
 
+    pub async fn connected_peer(&self, peer_id: &PeerId) {
+        let mut peers = self.network_globals.peers.write().await;
+        let entry = peers
+            .entry(*peer_id)
+            .or_default();
+        entry.is_connected = true;
+    }
+
+    pub async fn disconnected_peer(&self, peer_id: &PeerId) {
+        let mut peers = self.network_globals.peers.write().await;
+        let Some(entry) = peers.get_mut(peer_id) else {
+            tracing::error!("Disconnected peer {} not found in peer manager", peer_id);
+            return;
+        };
+        entry.is_connected = false;
+    }
+
     async fn decay_scores(&self) {
         let mut peers = self.network_globals.peers.write().await;
         for (_, peer_info) in peers.iter_mut() {
@@ -73,4 +90,5 @@ impl PeerManager {
     async fn prune_peers(&self) -> Vec<PeerId> {
         vec![] // Placeholder for pruning logic
     }
+    
 }

@@ -150,6 +150,7 @@ impl Network {
                         .entry(peer_id)
                         .or_default()
                         .push(connection_id);
+                    return Ok(NetworkEvent::ConnectedPeer(peer_id));
                 }
                 SwarmEvent::ConnectionClosed { peer_id, connection_id, .. } => {
                     info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
@@ -159,6 +160,7 @@ impl Network {
                             self.connection_id_by_peer_id.remove(&peer_id);
                         }
                     }
+                    return Ok(NetworkEvent::DisconnectedPeer(peer_id));
                 }
                 _ => {}
             }

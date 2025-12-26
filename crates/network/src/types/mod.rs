@@ -73,4 +73,6 @@ pub(crate) enum NetworkEvent {
         peer_id: PeerId,
         request: Eth2Request,
     },
+    ConnectedPeer(PeerId),
+    DisconnectedPeer(PeerId),
 }

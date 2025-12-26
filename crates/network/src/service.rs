@@ -77,6 +77,9 @@ impl NetworkService {
                                 error!("Error handling response from peer {peer_id}: {e:?}");
                             }
                         }
+                        NetworkEvent::ConnectedPeer(peer_id) => {
+                            self.peer_manager.connected_peer(&peer_id).await;
+                        }
                         NetworkEvent::GossipBlock { peer_id, l2_block_response, message_id } => {
                             let message = L2SyncMessage::GossipBlock(peer_id, l2_block_response, message_id);
                             send_l2_sync_message(self.l2_sync_tx.clone(), message);
@@ -85,6 +88,9 @@ impl NetworkService {
                             error!("RPC request {:?} to peer {} failed", request, peer_id);
                             let message = L2SyncMessage::RPCFailed(peer_id, request);
                             send_l2_sync_message(self.l2_sync_tx.clone(), message);
+                        }
+                        NetworkEvent::DisconnectedPeer(peer_id) => {
+                            self.peer_manager.disconnected_peer(&peer_id).await;
                         }
                     }
                 }
