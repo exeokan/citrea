@@ -12,7 +12,7 @@ use borsh::BorshDeserialize;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
 use citrea_common::l2::{apply_l2_block, commit_l2_block, ApplyL2BlockError};
-use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest};
+use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest, PeerAction};
 use citrea_network::NetworkGlobals;
 use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::types::L2BlockHash;
@@ -37,6 +37,9 @@ use tracing::{debug, error, info, instrument};
 use crate::metrics::FULLNODE_METRICS;
 use crate::sync_manager::{BatchProcessingError, DownloadInfo, SyncManager, SyncManagerMessage};
 use crate::{InitParams, RollupPublicKeys, RunnerConfig};
+
+/// If the block is older than 5 minutes compared to the current head, we consider it old
+const OLD_GOSSIP_BLOCK_THRESHOLD: u64 = 150; // 150 blocks * 2 seconds per block = 5 minutes
 
 pub enum L2BlockProcessingError {
     ValidationError,
@@ -289,7 +292,9 @@ where
             L2SyncMessage::RPCFailed(peer_id, request) => {
                 match request {
                     Eth2Request::Status => {
-                        // P2P-TODO: slash lightly
+                        self.send_network_message(
+                            NetworkRequest::ReportPeer(peer_id, PeerAction::LowToleranceError)
+                        ).await;
                         debug!("Ignoring failed status request to peer {}", peer_id);
                     }
                     Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
@@ -331,7 +336,8 @@ where
                     validation_result: MessageAcceptance::Reject,
                 })
                 .await;
-                // P2P-TODO: slash peer?
+            
+                self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)).await;
                 return;
             }
         };
@@ -350,16 +356,10 @@ where
                 validation_result: MessageAcceptance::Reject,
             })
             .await;
-            // P2P-TODO: slash peer?
+
+            self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)).await;
             return;
         };
-
-        self.send_network_message(NetworkRequest::GossipBlockValidationResult {
-            peer_id,
-            message_id,
-            validation_result: MessageAcceptance::Accept, // propagate message
-        })
-        .await;
 
         let head_height = self
             .ledger_db
@@ -368,17 +368,29 @@ where
             .unwrap_or(0);
 
         // P2P-TODO: more checks on block height: if too old, reject and slash
-        if height != head_height + 1 {
-            info!(
-                "Ignoring gossiped L2 block at height {}: current head is {}",
-                height, head_height
-            );
+        if height + OLD_GOSSIP_BLOCK_THRESHOLD < head_height {
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Reject,
+            }).await;
+            return;
+        } else if height != head_height + 1 {
+            // If block is not the next expected block, ignore it (no slashing)
             return;
         }
 
+        self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+            peer_id,
+            message_id,
+            validation_result: MessageAcceptance::Accept, // propagate message
+        })
+        .await;
+
         self.process_l2_blocks_with_backoff(vec![l2_block_response])
             .await
-            .expect("Failed to process gossiped L2 block"); // P2P-TODO: slash depending on the error
+            // we don't slash the peer here, must be sequencer fault.
+            .expect("Failed to process gossiped L2 block that is validated, killing L2Syncer..."); 
         info!(
             "Successfully processed gossiped L2 block at height {}",
             height
@@ -422,6 +434,7 @@ where
     }
 
     async fn send_network_message(&self, request: NetworkRequest) {
+        // P2P-TODO: this is blocking if the channel is full
         self.network_request_tx
             .send(request)
             .await

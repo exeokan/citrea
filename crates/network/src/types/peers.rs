@@ -72,9 +72,14 @@ pub struct PeerInfo {
     pub is_connected: bool,
 }
 
+/// Actions that can be reported against a peer to adjust its score.
 pub enum PeerAction {
+    /// Immediate ban
     Fatal,
+    /// 5 times to ban a peer
     LowToleranceError,
+    /// 10 times to ban a peer
     MidToleranceError,
+    /// 50 times to ban a peer
     HighToleranceError,
 }
