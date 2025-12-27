@@ -72,9 +72,13 @@ impl NetworkService {
                             });
                         }
                         NetworkEvent::ResponseReceived { peer_id, response } => {
-                            if let Err(e) = self.on_response_received(peer_id, response).await {
-                                error!("Error handling response from peer {peer_id}: {e:?}");
-                            }
+                            let network_globals = self.network_globals.clone();
+                            let l2_sync_tx = self.l2_sync_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = Self::on_response_received(network_globals, l2_sync_tx, peer_id, response).await {
+                                    error!("Error handling response from peer {peer_id}: {e:?}");
+                                }
+                            });
                         }
                         NetworkEvent::GossipBlock { peer_id, l2_block_response, message_id } => {
                             let message = L2SyncMessage::GossipBlock(peer_id, l2_block_response, message_id);
@@ -183,15 +187,16 @@ impl NetworkService {
     }
 
     async fn on_response_received(
-        &self,
+        network_globals: Arc<NetworkGlobals>,
+        l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
         peer_id: libp2p::PeerId,
         response: Eth2Response,
     ) -> anyhow::Result<()> {
         match response {
             Eth2Response::Status(status) => {
                 info!("Received status from peer {}: {:?}", peer_id, status);
-                self
-                    .network_globals.peers
+                network_globals
+                    .peers
                     .write()
                     .await
                     // update or insert peer status
@@ -204,7 +209,7 @@ impl NetworkService {
             Eth2Response::BlocksByRange(blocks) => {
                 info!("Received {} blocks from peer {}", blocks.len(), peer_id);
                 let message = L2SyncMessage::BlockBatch(peer_id, blocks);
-                send_l2_sync_message(self.l2_sync_tx.clone(), message);
+                send_l2_sync_message(l2_sync_tx, message);
                 Ok(())
             }
         }
