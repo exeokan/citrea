@@ -10,10 +10,10 @@ use sov_rollup_interface::rpc::LedgerRpcProvider;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
+use crate::peer_manager::{HeartbeatResult, ReportPeerResult};
 use crate::types::{
-    BlocksByRangeRequest, Eth2Request, Eth2Response, L2SyncMessage, NetworkEvent, NetworkRequest,
-    PeerStatus, SCORE_HALFLIFE,
+    BlocksByRangeRequest, Eth2Request, Eth2Response, 
+    L2SyncMessage, NetworkEvent, NetworkRequest, PeerStatus,
 };
 use crate::{Network, NetworkGlobals};
 
@@ -23,7 +23,6 @@ pub const PM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 pub struct NetworkService {
     network: Network,
     network_globals: Arc<NetworkGlobals>,
-    peer_manager: PeerManager,
     ledger_db: LedgerDB,
     request_rx: mpsc::Receiver<NetworkRequest>,
     l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
@@ -39,9 +38,10 @@ impl NetworkService {
         l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
         has_tx_bodies: bool,
     ) -> Result<Self> {
-        let target_peers = network_config.target_peers;
-        let network = Network::build(network_config).context("Failed to build network")?;
-        let peer_manager = PeerManager::new(network_globals.clone(), target_peers, SCORE_HALFLIFE);
+        let network = Network::build(
+            network_config,
+            network_globals.clone()
+        ).context("Failed to build network")?;
         Ok(Self {
             network,
             network_globals,
@@ -49,7 +49,6 @@ impl NetworkService {
             request_rx,
             l2_sync_tx,
             has_tx_bodies,
-            peer_manager,
         })
     }
 
@@ -77,9 +76,6 @@ impl NetworkService {
                                 error!("Error handling response from peer {peer_id}: {e:?}");
                             }
                         }
-                        NetworkEvent::ConnectedPeer(peer_id) => {
-                            self.peer_manager.connected_peer(&peer_id).await;
-                        }
                         NetworkEvent::GossipBlock { peer_id, l2_block_response, message_id } => {
                             let message = L2SyncMessage::GossipBlock(peer_id, l2_block_response, message_id);
                             send_l2_sync_message(self.l2_sync_tx.clone(), message);
@@ -88,9 +84,6 @@ impl NetworkService {
                             error!("RPC request {:?} to peer {} failed", request, peer_id);
                             let message = L2SyncMessage::RPCFailed(peer_id, request);
                             send_l2_sync_message(self.l2_sync_tx.clone(), message);
-                        }
-                        NetworkEvent::DisconnectedPeer(peer_id) => {
-                            self.peer_manager.disconnected_peer(&peer_id).await;
                         }
                     }
                 }
@@ -140,7 +133,7 @@ impl NetworkService {
             }
             // P2P-TODO: add slashing
             NetworkRequest::ReportPeer(peer_id, action) => {
-                match self.peer_manager.report_peer(&peer_id, action).await {
+                match self.network.report_peer(&peer_id, action).await {
                     ReportPeerResult::Ban => {
                         info!("Peer {} has been banned by PeerManager", peer_id);
                         self.network.disconnect_peer(&peer_id);
@@ -218,7 +211,7 @@ impl NetworkService {
         }
 
     async fn on_pm_heartbeat_tick(&mut self) {
-        match self.peer_manager.heartbeat().await {
+        match self.network.peer_manager_heartbeat().await {
             HeartbeatResult::WantedPeers(wanted) => {
                 // P2P-TODO: request from discovery
                 info!("PeerManager requests {} more peers", wanted);

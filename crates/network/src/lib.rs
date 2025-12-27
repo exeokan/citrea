@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::Duration;
 
@@ -17,7 +18,8 @@ use libp2p::{
 use sov_rollup_interface::rpc::block::L2BlockResponse;
 use tracing::{error, info};
 
-use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
+use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
+use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
 mod rpc;
 mod peer_manager;
@@ -48,13 +50,14 @@ struct MyBehaviour {
 
 struct Network {
     swarm: Swarm<MyBehaviour>,
+    peer_manager: PeerManager,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
 }
 
 impl Network {
-    fn build(network_config: NetworkConfig) -> Result<Self> {
+    fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
         let heartbeat_interval =
             Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
 
@@ -120,8 +123,14 @@ impl Network {
             info!("Dialed {addr}");
         }
 
+        let peer_manager = PeerManager::new(
+            network_globals.clone(),
+            network_config.target_peers, 
+            SCORE_HALFLIFE
+        );
         Ok(Self {
             swarm,
+            peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             connection_id_by_peer_id: HashMap::new(),
@@ -150,7 +159,7 @@ impl Network {
                         .entry(peer_id)
                         .or_default()
                         .push(connection_id);
-                    return Ok(NetworkEvent::ConnectedPeer(peer_id));
+                    self.peer_manager.connected_peer(&peer_id).await;
                 }
                 SwarmEvent::ConnectionClosed { peer_id, connection_id, .. } => {
                     info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
@@ -160,7 +169,7 @@ impl Network {
                             self.connection_id_by_peer_id.remove(&peer_id);
                         }
                     }
-                    return Ok(NetworkEvent::DisconnectedPeer(peer_id));
+                    self.peer_manager.disconnected_peer(&peer_id).await;
                 }
                 _ => {}
             }
@@ -352,5 +361,13 @@ impl Network {
                 error!("Failed to close connection to peer {peer_id}, connection id: {connection_id}");
             }
         }
+    }
+
+    pub async fn peer_manager_heartbeat(&mut self) -> HeartbeatResult {
+        self.peer_manager.heartbeat().await
+    }
+
+    pub async fn report_peer(&mut self, peer_id: &PeerId, action: PeerAction) -> ReportPeerResult {
+        self.peer_manager.report_peer(peer_id, action).await
     }
 }
