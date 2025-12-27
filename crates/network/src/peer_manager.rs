@@ -58,6 +58,9 @@ impl PeerManager {
             // Too many peers, need to drop some
             let prune_target = num_peers - self.target_peers;
             let excess_peers = self.prune_peers(prune_target).await;
+            if !excess_peers.is_empty() {
+                tracing::info!("Pruned {} excess peer(s)", excess_peers.len());
+            }
             HeartbeatResult::ExcessPeers(excess_peers)
         } else {
             HeartbeatResult::NoAction

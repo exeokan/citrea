@@ -137,6 +137,7 @@ impl NetworkService {
             }
             // P2P-TODO: add slashing
             NetworkRequest::ReportPeer(peer_id, action) => {
+                tracing::info!("Reporting peer {} for action {:?}", peer_id, action);
                 match self.network.report_peer(&peer_id, action).await {
                     ReportPeerResult::Ban => {
                         info!("Peer {} has been banned by PeerManager", peer_id);
@@ -255,6 +256,8 @@ pub fn l2_blocks_by_range(
 
     // P2P-TODO: check if start > pruned && end <= head
     // return error
+
+    // P2P-TODO: sometimes we get start > end here, because of line 256
     ledger_db
         .get_l2_blocks_range(start, end)?
         .into_iter()

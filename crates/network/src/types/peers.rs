@@ -73,6 +73,7 @@ pub struct PeerInfo {
 }
 
 /// Actions that can be reported against a peer to adjust its score.
+#[derive(Debug)]
 pub enum PeerAction {
     /// Immediate ban
     Fatal,
