@@ -313,7 +313,6 @@ impl Network {
                     .pending_outbound_requests
                     .remove(&request_id)
                     .expect("Failed outbound request must be tracked");
-                // P2P-TODO: slashing based on error here?
                 Some(NetworkEvent::RPCFailed {
                     peer_id: peer,
                     request: failed_request,

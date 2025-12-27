@@ -198,7 +198,6 @@ where
         &mut self,
         l2_block_response: &L2BlockResponse,
     ) -> Result<(), L2BlockProcessingError> {
-        // P2P-TODO: return custom error, slash depending on it,
         // and continue exponential backoff depending on error type
         let _l2_lock = self.backup_manager.start_l2_processing().await; // P2P-TODO: is this safe?
         let start = std::time::Instant::now();
@@ -367,7 +366,6 @@ where
             .expect("DB error")
             .unwrap_or(0);
 
-        // P2P-TODO: more checks on block height: if too old, reject and slash
         if height + OLD_GOSSIP_BLOCK_THRESHOLD < head_height {
             self.send_network_message(NetworkRequest::GossipBlockValidationResult {
                 peer_id,

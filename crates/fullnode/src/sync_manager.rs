@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use citrea_network::{NetworkRequest, NetworkGlobals};
+use citrea_network::{types::PeerAction, NetworkGlobals, NetworkRequest};
 use libp2p::PeerId;
 use sov_db::ledger_db::SharedLedgerOps;
 use tokio::select;
@@ -156,8 +156,7 @@ where
 
         let Some((peer_id, _)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
-            // P2P-TODO: slash some peers here
-            // may be started with peers that don't have tx bodies
+            self.report_unuseful_peers().await;
             return Ok(());
         };
         let start = head_block + 1;
@@ -188,11 +187,40 @@ where
         match error {
             BatchProcessingError::DownloadFailed => {
                 warn!("Download failed from peer {peer_id}");
-                // P2P-TODO: slash peer or reduce trust score
+                self.network_tx.send(
+                    NetworkRequest::ReportPeer(peer_id, PeerAction::MidToleranceError)
+                ).await.expect("Network channel closed");
             }
             BatchProcessingError::ValidationError => {
                 warn!("Validation error when downloading from peer {peer_id}");
-                // P2P-TODO: slash peer or reduce trust score
+                self.network_tx.send(
+                    NetworkRequest::ReportPeer(peer_id, PeerAction::HighToleranceError)
+                ).await.expect("Network channel closed");
+            }
+        }
+    }
+
+    async fn report_unuseful_peers(&self) {
+        let head_block = self.ledger_db
+            .get_head_l2_block_height()
+            .unwrap_or(None)
+            .unwrap_or(0);
+        let peers = self
+            .network_globals
+            .peers
+            .read()
+            .await;
+
+        for (peer_id, info) in peers.iter() {
+            if let Some(status) = &info.status {
+                if status.head_block + HEAD_BLOCK_MARGIN <= head_block
+                    || status.last_pruned_block.is_some_and(|pruned_height| pruned_height > head_block)
+                {
+                    warn!("Disconnecting unuseful peer {}", peer_id);
+                    self.network_tx.send(
+                        NetworkRequest::ReportPeer(*peer_id, PeerAction::LowToleranceError)
+                    ).await.expect("Network channel closed");
+                }
             }
         }
     }
