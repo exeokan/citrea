@@ -225,23 +225,20 @@ impl Network {
     async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
         match event {
             mdns::Event::Discovered(list) => {
-                for (peer_id, _multiaddr) in list {
-                    info!("mDNS discovered a new peer: {peer_id}");
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .add_explicit_peer(&peer_id);
+                tracing::debug!("mDNS discovered {} new peers", list.len());
+                let to_dial = self
+                    .peer_manager
+                    .discovered_peers(list)
+                    .await;
+                for (peer_id, multiaddr) in to_dial {
+                    if let Err(e) = self.swarm.dial(multiaddr.clone()) {
+                        error!("Failed to dial discovered peer {peer_id} at {multiaddr}: {e}");
+                    } else {
+                        info!("Dialed discovered peer {peer_id} at {multiaddr}");
+                    }
                 }
             }
-            mdns::Event::Expired(list) => {
-                for (peer_id, _multiaddr) in list {
-                    info!("mDNS discover peer has expired: {peer_id}");
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .remove_explicit_peer(&peer_id);
-                }
-            }
+            mdns::Event::Expired(_) => {}
         }
         None
     }

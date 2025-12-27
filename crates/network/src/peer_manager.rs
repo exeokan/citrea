@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::{Duration, Instant}};
-use libp2p::PeerId;
+use rand::seq::SliceRandom;
+use libp2p::{PeerId, Multiaddr};
 
 use crate::{types::PeerAction, NetworkGlobals};
 
@@ -65,6 +66,32 @@ impl PeerManager {
         } else {
             HeartbeatResult::NoAction
         }
+    }
+
+    pub async fn discovered_peers(&self, peer_ids: Vec<(PeerId, Multiaddr)>) -> Vec<(PeerId, Multiaddr)> {
+        let peers = self.network_globals.peers.read().await;
+        if peers.len() >= self.target_peers {
+            return vec![];
+        }
+
+        let mut peers_to_dial = Vec::new();
+        for (peer_id, multiaddr) in peer_ids {
+            if let Some(peer_info) = peers.get(&peer_id) {
+                if peer_info.is_connected || peer_info.score.is_banned() {
+                    continue;
+                }
+            }
+            peers_to_dial.push((peer_id, multiaddr));
+        }
+
+        let remaining_slots = self.target_peers - peers.len();
+        // randomly select peers to dial if more than remaining slots
+        if peers_to_dial.len() > remaining_slots {
+            let mut rng = rand::thread_rng();
+            peers_to_dial.shuffle(&mut rng);
+            peers_to_dial.truncate(remaining_slots);
+        }
+        peers_to_dial
     }
 
     pub async fn connected_peer(&self, peer_id: &PeerId) {
