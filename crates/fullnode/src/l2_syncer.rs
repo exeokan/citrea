@@ -4,7 +4,7 @@
 //! and processing them to maintain the fullnode's state.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
@@ -160,7 +160,7 @@ where
     /// 4. Maintains metrics about syncing progress
     #[instrument(name = "L2Syncer", skip_all)]
     pub async fn run(&mut self, mut shutdown_signal: GracefulShutdown) {
-        let (manager_tx, manager_rx) = mpsc::channel(1);
+        let (manager_tx, manager_rx) = mpsc::channel(10);
 
         let sync_manager = SyncManager::new(
             self.ledger_db.clone(),
@@ -286,7 +286,7 @@ where
                     .expect("SyncManager receiver dropped");
             }
             L2SyncMessage::GossipBlock(peer_id, block, message_id) => {
-                self.on_gossip_block(peer_id, block, message_id).await;
+                self.on_gossip_block(peer_id, block, message_id, &manager_tx).await;
             }
             L2SyncMessage::RPCFailed(peer_id, request) => {
                 match request {
@@ -319,6 +319,7 @@ where
         peer_id: PeerId,
         l2_block_response: L2BlockResponse,
         message_id: MessageId,
+        manager_tx: &mpsc::Sender<SyncManagerMessage>,
     ) {
         debug!("Received gossiped L2 block from peer {}", peer_id);
 
@@ -393,6 +394,11 @@ where
             "Successfully processed gossiped L2 block at height {}",
             height
         );
+        manager_tx.send(
+            SyncManagerMessage::GossipBlockProcessed(Instant::now())
+        )
+            .await
+            .expect("SyncManager receiver dropped");
     }
 
     async fn process_l2_blocks_with_backoff(

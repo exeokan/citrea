@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use std::time::Duration;
 
 use citrea_network::{types::PeerAction, NetworkGlobals, NetworkRequest};
@@ -22,11 +22,8 @@ pub enum BatchProcessingError {
 }
 
 pub(crate) enum SyncManagerMessage {
-    // P2P-TODO: add gossip block to update known head
-    // so that we can prune some peers that are not useful
-    // we may also remove ledger db import and just rely on messages from l2 syncer
-    // or implement a threshold where we dont download blocks if we are close to head of the peer
     BatchProcessed(DownloadInfo, Result<(), BatchProcessingError>),
+    GossipBlockProcessed(Instant),
 }
 
 enum DownloadState {
@@ -46,6 +43,7 @@ where
     status_interval: Duration,
     sync_interval: Duration,
     download_state: DownloadState,
+    gossip_block_processed_at: Option<Instant>,
 }
 
 impl<DB> SyncManager<DB>
@@ -70,6 +68,7 @@ where
             status_interval,
             sync_interval,
             download_state: DownloadState::Idle,
+            gossip_block_processed_at: None,
         }
     }
 
@@ -83,10 +82,14 @@ where
                     self.on_sync_manager_event(event).await;
                 }
                 _ = status_interval.tick() => {
-                    for peer_id in self.network_globals.peers.read().await.keys() {
+                    let peers = self.network_globals.peers.read().await;
+                    tracing::info!("Requesting peer statuses from all connected peers: total {}", peers.len());
+
+                    for peer_id in peers.keys() {
+                        tracing::info!("Requesting status from peer {}", peer_id);
                         let request = NetworkRequest::GetPeerStatus(*peer_id);
                         self.send_network_message(request).await;
-                        debug!("Requested status from peer {}", peer_id);
+                        tracing::info!("Requested status from peer {}", peer_id);
                     }
                 }
                 _ = sync_interval.tick() => {
@@ -123,10 +126,25 @@ where
                     }
                 }
             }
+            SyncManagerMessage::GossipBlockProcessed(processed_at) => {
+                self.gossip_block_processed_at = Some(processed_at);
+            }
         }
     }
 
     async fn download_from_best_peer(&mut self) -> anyhow::Result<()> {
+        if let Some(last_processed) = self.gossip_block_processed_at {
+            let duration_since = Instant::now().duration_since(last_processed);
+            if duration_since < Duration::from_secs(10) {
+                tracing::info!("Skipping download from best peer due to recent gossip block processing");
+                return Ok(());
+            } else {
+                tracing::info!(
+                    "Proceeding with download from best peer, last gossip block processed {} seconds ago",
+                    duration_since.as_secs()
+                );
+            }
+        }
         let head_block = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
         let peers = self
             .network_globals
@@ -134,6 +152,14 @@ where
             .read()
             .await;
 
+        for (peer_id, info) in peers.iter() {
+            tracing::info!(
+                "Peer {}: is_connected={}, status={:?}",
+                peer_id,
+                info.is_connected,
+                info.status
+            );
+        }
         // filter peers such that:
         let best_peer = peers
             .iter()
@@ -216,7 +242,6 @@ where
                 if status.head_block + HEAD_BLOCK_MARGIN <= head_block
                     || status.last_pruned_block.is_some_and(|pruned_height| pruned_height > head_block)
                 {
-                    warn!("Disconnecting unuseful peer {}", peer_id);
                     self.network_tx.send(
                         NetworkRequest::ReportPeer(*peer_id, PeerAction::LowToleranceError)
                     ).await.expect("Network channel closed");
