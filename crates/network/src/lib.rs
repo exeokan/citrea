@@ -167,9 +167,9 @@ impl Network {
                         connections.retain(|&id| id != connection_id);
                         if connections.is_empty() {
                             self.connection_id_by_peer_id.remove(&peer_id);
+                            self.peer_manager.disconnected_peer(&peer_id).await;
                         }
                     }
-                    self.peer_manager.disconnected_peer(&peer_id).await;
                 }
                 _ => {}
             }
