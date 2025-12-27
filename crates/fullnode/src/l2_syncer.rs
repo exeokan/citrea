@@ -405,6 +405,21 @@ where
         &mut self,
         l2_blocks: Vec<L2BlockResponse>,
     ) -> anyhow::Result<()> {
+        let head_height = self
+            .ledger_db
+            .get_head_l2_block_height()
+            .expect("DB error")
+            .unwrap_or(0);
+    
+        let first_block_height: u64 = l2_blocks.first().expect("Block batch is non-empty").header.height.to();
+        if first_block_height < head_height + 1 {
+            tracing::warn!(
+                "Skipping processing of L2 blocks starting at height {} <= current head height {}", 
+                first_block_height, head_height
+            );
+            return Ok(());
+        }
+
         for l2_block in l2_blocks {
             let mut backoff = ExponentialBackoff::default();
             loop {
