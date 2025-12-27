@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Instant};
 use std::time::Duration;
 
+use anyhow::Context;
 use citrea_network::{types::PeerAction, NetworkGlobals, NetworkRequest};
 use libp2p::PeerId;
 use sov_db::ledger_db::SharedLedgerOps;
@@ -183,7 +184,7 @@ where
 
         let Some((peer_id, _)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
-            self.report_unuseful_peers().await;
+            self.report_unuseful_peers().await?;
             return Ok(());
         };
         let start = head_block + 1;
@@ -227,10 +228,10 @@ where
         }
     }
 
-    async fn report_unuseful_peers(&self) {
+    async fn report_unuseful_peers(&self) -> anyhow::Result<()> {
         let head_block = self.ledger_db
             .get_head_l2_block_height()
-            .unwrap_or(None)
+            .context("Failed to get head L2 block height")?
             .unwrap_or(0);
         let peers = self
             .network_globals
@@ -249,5 +250,6 @@ where
                 }
             }
         }
+        Ok(())
     }
 }
