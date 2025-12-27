@@ -135,7 +135,6 @@ impl NetworkService {
                     Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }),
                 );
             }
-            // P2P-TODO: add slashing
             NetworkRequest::ReportPeer(peer_id, action) => {
                 tracing::info!("Reporting peer {} for action {:?}", peer_id, action);
                 match self.network.report_peer(&peer_id, action).await {

@@ -271,12 +271,12 @@ impl Network {
                     message_id,
                 })
             }
-            gossipsub::Event::GossipsubNotSupported { .. } => {
-                // P2P-TODO: ban peer
+            gossipsub::Event::GossipsubNotSupported { peer_id } => {
+                self.report_peer(&peer_id, PeerAction::Fatal).await;
                 None
             }
-            gossipsub::Event::SlowPeer { .. } => {
-                // P2P-TODO: slash peer
+            gossipsub::Event::SlowPeer { peer_id, .. } => {
+                self.report_peer(&peer_id, PeerAction::HighToleranceError).await;
                 None
             }
             gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
