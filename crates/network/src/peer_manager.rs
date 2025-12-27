@@ -56,7 +56,8 @@ impl PeerManager {
             HeartbeatResult::WantedPeers(wanted)
         } else if num_peers > self.target_peers {
             // Too many peers, need to drop some
-            let excess_peers = self.prune_peers().await;
+            let prune_target = num_peers - self.target_peers;
+            let excess_peers = self.prune_peers(prune_target).await;
             HeartbeatResult::ExcessPeers(excess_peers)
         } else {
             HeartbeatResult::NoAction
@@ -87,8 +88,33 @@ impl PeerManager {
         }
     }
 
-    async fn prune_peers(&self) -> Vec<PeerId> {
-        vec![] // Placeholder for pruning logic
+    async fn prune_peers(&self, num_peers: usize) -> Vec<PeerId> {
+        let peers = self.network_globals.peers
+            .read()
+            .await;
+
+        let connected_peers: Vec<_> = peers
+            .iter()
+            .filter(|(_, info)| info.is_connected && info.status.is_some())
+            .collect();
+
+        let mut peers_by_score: Vec<_> = connected_peers
+            .into_iter()
+            .map(|(peer_id, info)| (*peer_id, info.score.score()))
+            .collect();
+
+        // Sort peers by score
+        peers_by_score.sort_by(|a, b| 
+            a.1.partial_cmp(&b.1)
+        .unwrap_or(std::cmp::Ordering::Equal));
+        // Prune the lowest-scoring peers
+        let peers_to_prune = peers_by_score
+            .into_iter()
+            .take(num_peers)
+            .map(|(peer_id, _)| peer_id)
+            .collect();
+
+        return peers_to_prune;
     }
     
 }
