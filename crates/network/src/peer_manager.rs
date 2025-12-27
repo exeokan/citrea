@@ -103,13 +103,11 @@ impl PeerManager {
 
         let mut peers_by_score: Vec<_> = connected_peers
             .into_iter()
-            .map(|(peer_id, info)| (*peer_id, info.score.score()))
+            .map(|(peer_id, info)| (*peer_id, &info.score))
             .collect();
 
         // Sort peers by score
-        peers_by_score.sort_by(|a, b| 
-            a.1.partial_cmp(&b.1)
-        .unwrap_or(std::cmp::Ordering::Equal));
+        peers_by_score.sort_by_key(|&(_, score)| score);
         // Prune the lowest-scoring peers
         let peers_to_prune = peers_by_score
             .into_iter()

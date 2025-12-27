@@ -17,6 +17,26 @@ pub struct Score {
     banned_at: Option<Instant>,
 }
 
+impl PartialEq for Score {
+    fn eq(&self, other: &Self) -> bool {
+        self.val == other.val
+    }
+}
+
+impl Eq for Score {}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.val.partial_cmp(&other.val)
+    }
+}
+
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.val.partial_cmp(&other.val).unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
 impl Score {
     pub fn add(&mut self, amount: f32) {
         self.val = (self.val + amount).clamp(MIN_SCORE, 0.0);

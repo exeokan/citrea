@@ -161,20 +161,20 @@ where
             .filter(|(_, info)| info.is_connected)
             // has status
             .filter_map(|(peer_id, info)| {
-                info.status.as_ref().map(|status| (peer_id, status))
+                info.status.as_ref().map(|status| (peer_id, info, status))
             })
             // has tx bodies
-            .filter(|(_, status)| status.has_tx_bodies)
+            .filter(|(_, _, status)| status.has_tx_bodies)
             // head block + HEAD_BLOCK_MARGIN > local head block
-            .filter(|(_, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
+            .filter(|(_, _, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
             // last pruned block <= local head height
-            .filter(|(_, status)| {
+            .filter(|(_, _, status)| {
                 status.last_pruned_block.is_none_or(|pruned_height| pruned_height <= head_block)
             })
             // pick the one with highest head block
-            .max_by_key(|(_, status)| status.head_block);
+            .max_by_key(|(_, info, _)| (&info.score));
 
-        let Some((peer_id, _)) = best_peer else {
+        let Some((peer_id, _, _)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
             self.report_unuseful_peers().await?;
             return Ok(());
