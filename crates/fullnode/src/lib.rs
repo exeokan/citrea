@@ -265,7 +265,6 @@ where
         backup_manager,
     );
 
-    let network_globals = Arc::new(NetworkGlobals::new());
     let citrea_network = NetworkService::build(
         network_config,
         network_globals,
