@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 const HEAD_BLOCK_MARGIN: u64 = 5;
+const SKIP_DOWNLOAD_IF_GOSSIP_WITHIN: Duration = Duration::from_secs(10);
 
 pub struct DownloadInfo {
     pub peer_id: PeerId,
@@ -135,7 +136,7 @@ where
     async fn download_from_best_peer(&mut self) -> anyhow::Result<()> {
         if let Some(last_processed) = self.gossip_block_processed_at {
             let duration_since = Instant::now().duration_since(last_processed);
-            if duration_since < Duration::from_secs(10) {
+            if duration_since < SKIP_DOWNLOAD_IF_GOSSIP_WITHIN {
                 tracing::info!("Skipping download from best peer due to recent gossip block processing");
                 return Ok(());
             } else {
