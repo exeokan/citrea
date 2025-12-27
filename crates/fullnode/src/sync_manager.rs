@@ -154,14 +154,6 @@ where
             .read()
             .await;
 
-        for (peer_id, info) in peers.iter() {
-            tracing::info!(
-                "Peer {}: is_connected={}, status={:?}",
-                peer_id,
-                info.is_connected,
-                info.status
-            );
-        }
         // filter peers such that:
         let best_peer = peers
             .iter()
