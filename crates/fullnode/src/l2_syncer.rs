@@ -288,7 +288,7 @@ where
                     .expect("SyncManager receiver dropped");
             }
             L2SyncMessage::GossipBlock(peer_id, block, message_id) => {
-                self.on_gossip_block(peer_id, block, message_id, manager_tx)
+                self.on_gossip_block(peer_id, *block, message_id, manager_tx)
                     .await;
             }
             L2SyncMessage::RPCFailed(peer_id, request) => match request {

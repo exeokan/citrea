@@ -50,7 +50,7 @@ pub enum NetworkRequest {
 }
 
 pub enum L2SyncMessage {
-    GossipBlock(PeerId, L2BlockResponse, MessageId),
+    GossipBlock(PeerId, Box<L2BlockResponse>, MessageId),
     BlockBatch(PeerId, Vec<L2BlockResponse>),
     RPCFailed(PeerId, Eth2Request),
 }

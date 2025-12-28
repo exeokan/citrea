@@ -79,7 +79,7 @@ impl NetworkService {
                             });
                         }
                         NetworkEvent::GossipBlock { peer_id, l2_block_response, message_id } => {
-                            let message = L2SyncMessage::GossipBlock(peer_id, l2_block_response, message_id);
+                            let message = L2SyncMessage::GossipBlock(peer_id, Box::new(l2_block_response), message_id);
                             send_l2_sync_message(self.l2_sync_tx.clone(), message);
                         }
                         NetworkEvent::RPCFailed { peer_id, request } => {
