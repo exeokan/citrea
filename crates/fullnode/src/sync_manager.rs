@@ -1,8 +1,9 @@
-use std::{sync::Arc, time::Instant};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use citrea_network::{types::PeerAction, NetworkGlobals, NetworkRequest};
+use citrea_network::types::PeerAction;
+use citrea_network::{NetworkGlobals, NetworkRequest};
 use libp2p::PeerId;
 use sov_db::ledger_db::SharedLedgerOps;
 use tokio::select;
@@ -135,7 +136,9 @@ where
         if let Some(last_processed) = self.gossip_block_processed_at {
             let duration_since = Instant::now().duration_since(last_processed);
             if duration_since < SKIP_DOWNLOAD_IF_GOSSIP_WITHIN {
-                tracing::info!("Skipping download from best peer due to recent gossip block processing");
+                tracing::info!(
+                    "Skipping download from best peer due to recent gossip block processing"
+                );
                 return Ok(());
             } else {
                 debug!(
@@ -145,11 +148,7 @@ where
             }
         }
         let head_block = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
-        let peers = self
-            .network_globals
-            .peers
-            .read()
-            .await;
+        let peers = self.network_globals.peers.read().await;
 
         // filter peers such that:
         let best_peer = peers
@@ -166,7 +165,9 @@ where
             .filter(|(_, _, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
             // last pruned block <= local head height
             .filter(|(_, _, status)| {
-                status.last_pruned_block.is_none_or(|pruned_height| pruned_height <= head_block)
+                status
+                    .last_pruned_block
+                    .is_none_or(|pruned_height| pruned_height <= head_block)
             })
             // pick the one with highest head block
             .max_by_key(|(_, info, _)| (&info.score));
@@ -204,38 +205,46 @@ where
         match error {
             BatchProcessingError::DownloadFailed => {
                 warn!("Download failed from peer {peer_id}");
-                self.network_tx.send(
-                    NetworkRequest::ReportPeer(peer_id, PeerAction::MidToleranceError)
-                ).await.expect("Network channel closed");
+                self.network_tx
+                    .send(NetworkRequest::ReportPeer(
+                        peer_id,
+                        PeerAction::MidToleranceError,
+                    ))
+                    .await
+                    .expect("Network channel closed");
             }
             BatchProcessingError::ValidationError => {
                 warn!("Validation error when downloading from peer {peer_id}");
-                self.network_tx.send(
-                    NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)
-                ).await.expect("Network channel closed");
+                self.network_tx
+                    .send(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                    .await
+                    .expect("Network channel closed");
             }
         }
     }
 
     async fn report_unuseful_peers(&self) -> anyhow::Result<()> {
-        let head_block = self.ledger_db
+        let head_block = self
+            .ledger_db
             .get_head_l2_block_height()
             .context("Failed to get head L2 block height")?
             .unwrap_or(0);
-        let peers = self
-            .network_globals
-            .peers
-            .read()
-            .await;
+        let peers = self.network_globals.peers.read().await;
 
         for (peer_id, info) in peers.iter() {
             if let Some(status) = &info.status {
                 if status.head_block + HEAD_BLOCK_MARGIN <= head_block
-                    || status.last_pruned_block.is_some_and(|pruned_height| pruned_height > head_block)
+                    || status
+                        .last_pruned_block
+                        .is_some_and(|pruned_height| pruned_height > head_block)
                 {
-                    self.network_tx.send(
-                        NetworkRequest::ReportPeer(*peer_id, PeerAction::LowToleranceError)
-                    ).await.expect("Network channel closed");
+                    self.network_tx
+                        .send(NetworkRequest::ReportPeer(
+                            *peer_id,
+                            PeerAction::LowToleranceError,
+                        ))
+                        .await
+                        .expect("Network channel closed");
                 }
             }
         }

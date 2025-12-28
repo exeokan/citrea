@@ -12,7 +12,9 @@ use borsh::BorshDeserialize;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
 use citrea_common::l2::{apply_l2_block, commit_l2_block, ApplyL2BlockError};
-use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest, PeerAction};
+use citrea_network::types::{
+    BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest, PeerAction,
+};
 use citrea_network::NetworkGlobals;
 use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::types::L2BlockHash;
@@ -286,31 +288,32 @@ where
                     .expect("SyncManager receiver dropped");
             }
             L2SyncMessage::GossipBlock(peer_id, block, message_id) => {
-                self.on_gossip_block(peer_id, block, message_id, &manager_tx).await;
+                self.on_gossip_block(peer_id, block, message_id, manager_tx)
+                    .await;
             }
-            L2SyncMessage::RPCFailed(peer_id, request) => {
-                match request {
-                    Eth2Request::Status => {
-                        self.send_network_message(
-                            NetworkRequest::ReportPeer(peer_id, PeerAction::LowToleranceError)
-                        ).await;
-                        debug!("Ignoring failed status request to peer {}", peer_id);
-                    }
-                    Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
-                        manager_tx
-                            .send(SyncManagerMessage::BatchProcessed(
-                                DownloadInfo {
-                                    peer_id,
-                                    start,
-                                    end,
-                                },
-                                Err(BatchProcessingError::DownloadFailed),
-                            ))
-                            .await
-                            .expect("SyncManager receiver dropped");
-                    }
+            L2SyncMessage::RPCFailed(peer_id, request) => match request {
+                Eth2Request::Status => {
+                    self.send_network_message(NetworkRequest::ReportPeer(
+                        peer_id,
+                        PeerAction::LowToleranceError,
+                    ))
+                    .await;
+                    debug!("Ignoring failed status request to peer {}", peer_id);
                 }
-            }
+                Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
+                    manager_tx
+                        .send(SyncManagerMessage::BatchProcessed(
+                            DownloadInfo {
+                                peer_id,
+                                start,
+                                end,
+                            },
+                            Err(BatchProcessingError::DownloadFailed),
+                        ))
+                        .await
+                        .expect("SyncManager receiver dropped");
+                }
+            },
         }
     }
 
@@ -336,8 +339,9 @@ where
                     validation_result: MessageAcceptance::Reject,
                 })
                 .await;
-            
-                self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)).await;
+
+                self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                    .await;
                 return;
             }
         };
@@ -357,7 +361,8 @@ where
             })
             .await;
 
-            self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)).await;
+            self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                .await;
             return;
         };
 
@@ -372,9 +377,10 @@ where
                 peer_id,
                 message_id,
                 validation_result: MessageAcceptance::Reject,
-            }).await;
+            })
+            .await;
             return;
-        } 
+        }
 
         self.send_network_message(NetworkRequest::GossipBlockValidationResult {
             peer_id,
@@ -391,14 +397,13 @@ where
         self.process_l2_blocks_with_backoff(vec![l2_block_response])
             .await
             // we don't slash the peer here, must be sequencer fault.
-            .expect("Failed to process gossiped L2 block that is validated, killing L2Syncer..."); 
+            .expect("Failed to process gossiped L2 block that is validated, killing L2Syncer...");
         info!(
             "Successfully processed gossiped L2 block at height {}",
             height
         );
-        manager_tx.send(
-            SyncManagerMessage::GossipBlockProcessed(Instant::now())
-        )
+        manager_tx
+            .send(SyncManagerMessage::GossipBlockProcessed(Instant::now()))
             .await
             .expect("SyncManager receiver dropped");
     }
@@ -412,12 +417,18 @@ where
             .get_head_l2_block_height()
             .expect("DB error")
             .unwrap_or(0);
-    
-        let first_block_height: u64 = l2_blocks.first().expect("Block batch is non-empty").header.height.to();
+
+        let first_block_height: u64 = l2_blocks
+            .first()
+            .expect("Block batch is non-empty")
+            .header
+            .height
+            .to();
         if first_block_height < head_height + 1 {
             tracing::warn!(
-                "Skipping processing of L2 blocks starting at height {} <= current head height {}", 
-                first_block_height, head_height
+                "Skipping processing of L2 blocks starting at height {} <= current head height {}",
+                first_block_height,
+                head_height
             );
             return Ok(());
         }

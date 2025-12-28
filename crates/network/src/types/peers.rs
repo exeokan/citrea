@@ -33,7 +33,9 @@ impl PartialOrd for Score {
 
 impl Ord for Score {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.val.partial_cmp(&other.val).unwrap_or(std::cmp::Ordering::Equal)
+        self.val
+            .partial_cmp(&other.val)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 

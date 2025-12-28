@@ -517,7 +517,7 @@ impl FromEnv for NetworkConfig {
         let dial_addr = read_env("NETWORK_DIAL_ADDR").ok();
         let gossipsub_config = GossipsubConfig::from_env()?;
         let target_peers = read_env("NETWORK_TARGET_PEERS")?.parse()?;
-        
+
         Ok(Self {
             dial_addr,
             gossipsub_config,

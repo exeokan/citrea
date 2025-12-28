@@ -2,7 +2,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -16,17 +15,17 @@ use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
-mod rpc;
 mod peer_manager;
+mod rpc;
 pub mod service;
 pub mod types;
 pub use service::NetworkService;
-
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 
 #[derive(Default)]
@@ -125,8 +124,8 @@ impl Network {
 
         let peer_manager = PeerManager::new(
             network_globals.clone(),
-            network_config.target_peers, 
-            SCORE_HALFLIFE
+            network_config.target_peers,
+            SCORE_HALFLIFE,
         );
         Ok(Self {
             swarm,
@@ -153,7 +152,11 @@ impl Network {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Local node is listening on {address}");
                 }
-                SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
+                SwarmEvent::ConnectionEstablished {
+                    peer_id,
+                    connection_id,
+                    ..
+                } => {
                     info!("Connection established with peer {peer_id} (connection id: {connection_id})");
                     self.connection_id_by_peer_id
                         .entry(peer_id)
@@ -161,7 +164,11 @@ impl Network {
                         .push(connection_id);
                     self.peer_manager.connected_peer(&peer_id).await;
                 }
-                SwarmEvent::ConnectionClosed { peer_id, connection_id, .. } => {
+                SwarmEvent::ConnectionClosed {
+                    peer_id,
+                    connection_id,
+                    ..
+                } => {
                     info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
                     if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
                         connections.retain(|&id| id != connection_id);
@@ -226,10 +233,7 @@ impl Network {
         match event {
             mdns::Event::Discovered(list) => {
                 tracing::debug!("mDNS discovered {} new peers", list.len());
-                let to_dial = self
-                    .peer_manager
-                    .discovered_peers(list)
-                    .await;
+                let to_dial = self.peer_manager.discovered_peers(list).await;
                 for (peer_id, multiaddr) in to_dial {
                     if let Err(e) = self.swarm.dial(multiaddr.clone()) {
                         error!("Failed to dial discovered peer {peer_id} at {multiaddr}: {e}");
@@ -273,7 +277,8 @@ impl Network {
                 None
             }
             gossipsub::Event::SlowPeer { peer_id, .. } => {
-                self.report_peer(&peer_id, PeerAction::HighToleranceError).await;
+                self.report_peer(&peer_id, PeerAction::HighToleranceError)
+                    .await;
                 None
             }
             gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
@@ -355,7 +360,9 @@ impl Network {
         };
         for connection_id in connections {
             if !self.swarm.close_connection(*connection_id) {
-                error!("Failed to close connection to peer {peer_id}, connection id: {connection_id}");
+                error!(
+                    "Failed to close connection to peer {peer_id}, connection id: {connection_id}"
+                );
             }
         }
     }

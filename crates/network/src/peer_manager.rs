@@ -1,8 +1,11 @@
-use std::{sync::Arc, time::{Duration, Instant}};
-use rand::seq::SliceRandom;
-use libp2p::{PeerId, Multiaddr};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::{types::PeerAction, NetworkGlobals};
+use libp2p::{Multiaddr, PeerId};
+use rand::seq::SliceRandom;
+
+use crate::types::PeerAction;
+use crate::NetworkGlobals;
 
 pub enum ReportPeerResult {
     Ban,
@@ -28,7 +31,12 @@ impl PeerManager {
         target_peers: usize,
         score_halflife: Duration,
     ) -> Self {
-        Self { network_globals, target_peers, score_halflife, last_decay: Instant::now() }
+        Self {
+            network_globals,
+            target_peers,
+            score_halflife,
+            last_decay: Instant::now(),
+        }
     }
 
     pub async fn report_peer(&self, peer_id: &PeerId, action: PeerAction) -> ReportPeerResult {
@@ -68,7 +76,10 @@ impl PeerManager {
         }
     }
 
-    pub async fn discovered_peers(&self, peer_ids: Vec<(PeerId, Multiaddr)>) -> Vec<(PeerId, Multiaddr)> {
+    pub async fn discovered_peers(
+        &self,
+        peer_ids: Vec<(PeerId, Multiaddr)>,
+    ) -> Vec<(PeerId, Multiaddr)> {
         let peers = self.network_globals.peers.read().await;
         if peers.len() >= self.target_peers {
             return vec![];
@@ -96,9 +107,7 @@ impl PeerManager {
 
     pub async fn connected_peer(&self, peer_id: &PeerId) {
         let mut peers = self.network_globals.peers.write().await;
-        let entry = peers
-            .entry(*peer_id)
-            .or_default();
+        let entry = peers.entry(*peer_id).or_default();
         entry.is_connected = true;
     }
 
@@ -119,9 +128,7 @@ impl PeerManager {
     }
 
     async fn prune_peers(&self, num_peers: usize) -> Vec<PeerId> {
-        let peers = self.network_globals.peers
-            .read()
-            .await;
+        let peers = self.network_globals.peers.read().await;
 
         let connected_peers: Vec<_> = peers
             .iter()
@@ -136,13 +143,11 @@ impl PeerManager {
         // Sort peers by score
         peers_by_score.sort_by_key(|&(_, score)| score);
         // Prune the lowest-scoring peers
-        let peers_to_prune = peers_by_score
+
+        peers_by_score
             .into_iter()
             .take(num_peers)
             .map(|(peer_id, _)| peer_id)
-            .collect();
-
-        return peers_to_prune;
+            .collect()
     }
-    
 }

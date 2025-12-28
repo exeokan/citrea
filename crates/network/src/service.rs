@@ -12,8 +12,8 @@ use tracing::{error, info};
 
 use crate::peer_manager::{HeartbeatResult, ReportPeerResult};
 use crate::types::{
-    BlocksByRangeRequest, Eth2Request, Eth2Response, 
-    L2SyncMessage, NetworkEvent, NetworkRequest, PeerStatus,
+    BlocksByRangeRequest, Eth2Request, Eth2Response, L2SyncMessage, NetworkEvent, NetworkRequest,
+    PeerStatus,
 };
 use crate::{Network, NetworkGlobals};
 
@@ -38,10 +38,8 @@ impl NetworkService {
         l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>,
         has_tx_bodies: bool,
     ) -> Result<Self> {
-        let network = Network::build(
-            network_config,
-            network_globals.clone()
-        ).context("Failed to build network")?;
+        let network = Network::build(network_config, network_globals.clone())
+            .context("Failed to build network")?;
         Ok(Self {
             network,
             network_globals,
@@ -195,15 +193,15 @@ impl NetworkService {
         match response {
             Eth2Response::Status(status) => {
                 info!("Received status from peer {}: {:?}", peer_id, status);
-                network_globals
+                if let Some(peers) = network_globals
                     .peers
                     .write()
                     .await
                     // update or insert peer status
                     .get_mut(&peer_id)
-                    .map(|peers| {
-                        peers.status = Some(status);
-                    });
+                {
+                    peers.status = Some(status);
+                }
                 Ok(())
             }
             Eth2Response::BlocksByRange(blocks) => {
@@ -213,7 +211,7 @@ impl NetworkService {
                 Ok(())
             }
         }
-        }
+    }
 
     async fn on_pm_heartbeat_tick(&mut self) {
         match self.network.peer_manager_heartbeat().await {
@@ -222,12 +220,15 @@ impl NetworkService {
                 info!("PeerManager requests {} more peers", wanted);
             }
             HeartbeatResult::ExcessPeers(excess_peers) => {
-                info!("PeerManager suggests dropping {} excess peers", excess_peers.len());
+                info!(
+                    "PeerManager suggests dropping {} excess peers",
+                    excess_peers.len()
+                );
                 for peer_id in excess_peers {
                     self.network.disconnect_peer(&peer_id);
                 }
             }
-            HeartbeatResult::NoAction => {},
+            HeartbeatResult::NoAction => {}
         }
     }
 }
@@ -263,7 +264,6 @@ pub fn l2_blocks_by_range(
         .map(|block_opt| block_opt.ok_or_else(|| anyhow::anyhow!("Block not found")))
         .collect()
 }
-
 
 fn send_l2_sync_message(l2_sync_tx: Option<mpsc::Sender<L2SyncMessage>>, message: L2SyncMessage) {
     if let Some(l2_sync_tx) = l2_sync_tx {
