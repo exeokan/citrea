@@ -59,20 +59,22 @@ impl PeerManager {
         }
         // Check peer count against target
         let num_peers = self.network_globals.peers.read().await.len();
-        if num_peers < self.target_peers {
+        match num_peers.cmp(&self.target_peers) {
             // Need more peers
-            let wanted = self.target_peers - num_peers;
-            HeartbeatResult::WantedPeers(wanted)
-        } else if num_peers > self.target_peers {
-            // Too many peers, need to drop some
-            let prune_target = num_peers - self.target_peers;
-            let excess_peers = self.prune_peers(prune_target).await;
-            if !excess_peers.is_empty() {
-                tracing::info!("Pruned {} excess peer(s)", excess_peers.len());
+            std::cmp::Ordering::Less => {
+                let wanted = self.target_peers - num_peers;
+                HeartbeatResult::WantedPeers(wanted)
             }
-            HeartbeatResult::ExcessPeers(excess_peers)
-        } else {
-            HeartbeatResult::NoAction
+            std::cmp::Ordering::Greater => {
+                // Too many peers, need to drop some
+                let prune_target = num_peers - self.target_peers;
+                let excess_peers = self.prune_peers(prune_target).await;
+                if !excess_peers.is_empty() {
+                    tracing::info!("Pruned {} excess peer(s)", excess_peers.len());
+                }
+                HeartbeatResult::ExcessPeers(excess_peers)
+            }
+            std::cmp::Ordering::Equal => HeartbeatResult::NoAction,
         }
     }
 
