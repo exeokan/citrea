@@ -374,10 +374,7 @@ where
                 validation_result: MessageAcceptance::Reject,
             }).await;
             return;
-        } else if height != head_height + 1 {
-            // If block is not the next expected block, ignore it (no slashing)
-            return;
-        }
+        } 
 
         self.send_network_message(NetworkRequest::GossipBlockValidationResult {
             peer_id,
@@ -385,6 +382,11 @@ where
             validation_result: MessageAcceptance::Accept, // propagate message
         })
         .await;
+
+        if height != head_height + 1 {
+            // If block is not the next expected block, ignore it (no slashing)
+            return;
+        }
 
         self.process_l2_blocks_with_backoff(vec![l2_block_response])
             .await

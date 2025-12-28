@@ -85,13 +85,10 @@ where
                 }
                 _ = status_interval.tick() => {
                     let peers = self.network_globals.peers.read().await;
-                    tracing::info!("Requesting peer statuses from all connected peers: total {}", peers.len());
-
                     for peer_id in peers.keys() {
-                        tracing::info!("Requesting status from peer {}", peer_id);
                         let request = NetworkRequest::GetPeerStatus(*peer_id);
                         self.send_network_message(request).await;
-                        tracing::info!("Requested status from peer {}", peer_id);
+                        debug!("Requested status from peer {}", peer_id);
                     }
                 }
                 _ = sync_interval.tick() => {
@@ -141,7 +138,7 @@ where
                 tracing::info!("Skipping download from best peer due to recent gossip block processing");
                 return Ok(());
             } else {
-                tracing::info!(
+                debug!(
                     "Proceeding with download from best peer, last gossip block processed {} seconds ago",
                     duration_since.as_secs()
                 );
@@ -214,7 +211,7 @@ where
             BatchProcessingError::ValidationError => {
                 warn!("Validation error when downloading from peer {peer_id}");
                 self.network_tx.send(
-                    NetworkRequest::ReportPeer(peer_id, PeerAction::HighToleranceError)
+                    NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal)
                 ).await.expect("Network channel closed");
             }
         }
