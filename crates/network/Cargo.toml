@@ -14,6 +14,7 @@ resolver = "2"
 anyhow = { workspace = true }
 futures = { workspace = true }
 libp2p = { workspace = true, features = ["tokio", "gossipsub", "noise", "tcp", "yamux", "quic", "macros", "mdns", "request-response", "json"] }
+rand = { workspace = true }
 reth-tasks = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

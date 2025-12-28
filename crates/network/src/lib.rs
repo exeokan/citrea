@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,19 +10,35 @@ use futures::stream::StreamExt;
 use gossipsub::Message as GossipsubMessage;
 use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
+use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
+use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
+mod peer_manager;
 mod rpc;
 pub mod service;
 pub mod types;
 pub use service::NetworkService;
+pub use types::{NetworkRequest, PeerInfo, PeerStatus};
+
+#[derive(Default)]
+pub struct NetworkGlobals {
+    pub peers: RwLock<HashMap<PeerId, PeerInfo>>,
+}
+impl NetworkGlobals {
+    pub fn new() -> Self {
+        Self {
+            peers: RwLock::new(HashMap::new()),
+        }
+    }
+}
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
@@ -32,12 +49,14 @@ struct MyBehaviour {
 
 struct Network {
     swarm: Swarm<MyBehaviour>,
+    peer_manager: PeerManager,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
+    connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
 }
 
 impl Network {
-    fn build(network_config: NetworkConfig) -> Result<Self> {
+    fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
         let heartbeat_interval =
             Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
 
@@ -103,10 +122,17 @@ impl Network {
             info!("Dialed {addr}");
         }
 
+        let peer_manager = PeerManager::new(
+            network_globals.clone(),
+            network_config.target_peers,
+            SCORE_HALFLIFE,
+        );
         Ok(Self {
             swarm,
+            peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
+            connection_id_by_peer_id: HashMap::new(),
         })
     }
 
@@ -126,11 +152,31 @@ impl Network {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Local node is listening on {address}");
                 }
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    return Ok(NetworkEvent::NewPeer(peer_id));
+                SwarmEvent::ConnectionEstablished {
+                    peer_id,
+                    connection_id,
+                    ..
+                } => {
+                    info!("Connection established with peer {peer_id} (connection id: {connection_id})");
+                    self.connection_id_by_peer_id
+                        .entry(peer_id)
+                        .or_default()
+                        .push(connection_id);
+                    self.peer_manager.connected_peer(&peer_id).await;
                 }
-                SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                    return Ok(NetworkEvent::DisconnectedPeer(peer_id));
+                SwarmEvent::ConnectionClosed {
+                    peer_id,
+                    connection_id,
+                    ..
+                } => {
+                    info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
+                    if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
+                        connections.retain(|&id| id != connection_id);
+                        if connections.is_empty() {
+                            self.connection_id_by_peer_id.remove(&peer_id);
+                            self.peer_manager.disconnected_peer(&peer_id).await;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -186,23 +232,17 @@ impl Network {
     async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
         match event {
             mdns::Event::Discovered(list) => {
-                for (peer_id, _multiaddr) in list {
-                    info!("mDNS discovered a new peer: {peer_id}");
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .add_explicit_peer(&peer_id);
+                tracing::debug!("mDNS discovered {} new peers", list.len());
+                let to_dial = self.peer_manager.discovered_peers(list).await;
+                for (peer_id, multiaddr) in to_dial {
+                    if let Err(e) = self.swarm.dial(multiaddr.clone()) {
+                        error!("Failed to dial discovered peer {peer_id} at {multiaddr}: {e}");
+                    } else {
+                        info!("Dialed discovered peer {peer_id} at {multiaddr}");
+                    }
                 }
             }
-            mdns::Event::Expired(list) => {
-                for (peer_id, _multiaddr) in list {
-                    info!("mDNS discover peer has expired: {peer_id}");
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .remove_explicit_peer(&peer_id);
-                }
-            }
+            mdns::Event::Expired(_) => {}
         }
         None
     }
@@ -232,12 +272,13 @@ impl Network {
                     message_id,
                 })
             }
-            gossipsub::Event::GossipsubNotSupported { .. } => {
-                // P2P-TODO: ban peer
+            gossipsub::Event::GossipsubNotSupported { peer_id } => {
+                self.report_peer(&peer_id, PeerAction::Fatal).await;
                 None
             }
-            gossipsub::Event::SlowPeer { .. } => {
-                // P2P-TODO: slash peer
+            gossipsub::Event::SlowPeer { peer_id, .. } => {
+                self.report_peer(&peer_id, PeerAction::HighToleranceError)
+                    .await;
                 None
             }
             gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
@@ -283,7 +324,6 @@ impl Network {
                     .pending_outbound_requests
                     .remove(&request_id)
                     .expect("Failed outbound request must be tracked");
-                // P2P-TODO: slashing based on error here?
                 Some(NetworkEvent::RPCFailed {
                     peer_id: peer,
                     request: failed_request,
@@ -311,5 +351,27 @@ impl Network {
             .behaviour_mut()
             .gossipsub
             .report_message_validation_result(&message_id, propagation_source, validation_result);
+    }
+
+    pub fn disconnect_peer(&mut self, peer_id: &PeerId) {
+        let Some(connections) = self.connection_id_by_peer_id.get(peer_id) else {
+            error!("No connections found for peer {peer_id}, cannot disconnect");
+            return;
+        };
+        for connection_id in connections {
+            if !self.swarm.close_connection(*connection_id) {
+                error!(
+                    "Failed to close connection to peer {peer_id}, connection id: {connection_id}"
+                );
+            }
+        }
+    }
+
+    pub async fn peer_manager_heartbeat(&mut self) -> HeartbeatResult {
+        self.peer_manager.heartbeat().await
+    }
+
+    pub async fn report_peer(&mut self, peer_id: &PeerId, action: PeerAction) -> ReportPeerResult {
+        self.peer_manager.report_peer(peer_id, action).await
     }
 }

@@ -447,14 +447,31 @@ impl FromEnv for TelemetryConfig {
     }
 }
 
+const fn default_target_peers() -> usize {
+    10
+}
+
 /// Network configuration.
-#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NetworkConfig {
     /// Optional peer multiaddress.
+    #[serde(default)]
     pub dial_addr: Option<String>,
     /// Gossipsub configuration.
     #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
+    #[serde(default = "default_target_peers")]
+    pub target_peers: usize,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            dial_addr: None,
+            gossipsub_config: GossipsubConfig::default(),
+            target_peers: default_target_peers(),
+        }
+    }
 }
 
 const fn default_heartbeat_interval_secs() -> u64 {
@@ -499,9 +516,12 @@ impl FromEnv for NetworkConfig {
     fn from_env() -> anyhow::Result<Self> {
         let dial_addr = read_env("NETWORK_DIAL_ADDR").ok();
         let gossipsub_config = GossipsubConfig::from_env()?;
+        let target_peers = read_env("NETWORK_TARGET_PEERS")?.parse()?;
+
         Ok(Self {
             dial_addr,
             gossipsub_config,
+            target_peers,
         })
     }
 }

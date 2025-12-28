@@ -1,7 +1,9 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use citrea_network::types::{NetworkRequest, StatusResponse};
+use anyhow::Context;
+use citrea_network::types::PeerAction;
+use citrea_network::{NetworkGlobals, NetworkRequest};
 use libp2p::PeerId;
 use sov_db::ledger_db::SharedLedgerOps;
 use tokio::select;
@@ -9,6 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 const HEAD_BLOCK_MARGIN: u64 = 5;
+const SKIP_DOWNLOAD_IF_GOSSIP_WITHIN: Duration = Duration::from_secs(10);
 
 pub struct DownloadInfo {
     pub peer_id: PeerId,
@@ -22,14 +25,8 @@ pub enum BatchProcessingError {
 }
 
 pub(crate) enum SyncManagerMessage {
-    // P2P-TODO: add gossip block to update known head
-    // so that we can prune some peers that are not useful
-    // we may also remove ledger db import and just rely on messages from l2 syncer
-    // or implement a threshold where we dont download blocks if we are close to head of the peer
-    NewPeer(PeerId),
-    DisconnectedPeer(PeerId),
-    PeerStatus((PeerId, StatusResponse)),
     BatchProcessed(DownloadInfo, Result<(), BatchProcessingError>),
+    GossipBlockProcessed(Instant),
 }
 
 enum DownloadState {
@@ -44,11 +41,12 @@ where
     ledger_db: DB,
     event_rx: mpsc::Receiver<SyncManagerMessage>,
     network_tx: mpsc::Sender<NetworkRequest>,
-    peer_states: HashMap<PeerId, Option<StatusResponse>>,
+    network_globals: Arc<NetworkGlobals>,
     sync_blocks_count: u64,
     status_interval: Duration,
     sync_interval: Duration,
     download_state: DownloadState,
+    gossip_block_processed_at: Option<Instant>,
 }
 
 impl<DB> SyncManager<DB>
@@ -59,6 +57,7 @@ where
         ledger_db: DB,
         event_rx: mpsc::Receiver<SyncManagerMessage>,
         network_tx: mpsc::Sender<NetworkRequest>,
+        network_globals: Arc<NetworkGlobals>,
         sync_blocks_count: u64,
         status_interval: Duration,
         sync_interval: Duration,
@@ -67,11 +66,12 @@ where
             ledger_db,
             event_rx,
             network_tx,
-            peer_states: HashMap::new(),
+            network_globals,
             sync_blocks_count,
             status_interval,
             sync_interval,
             download_state: DownloadState::Idle,
+            gossip_block_processed_at: None,
         }
     }
 
@@ -85,7 +85,8 @@ where
                     self.on_sync_manager_event(event).await;
                 }
                 _ = status_interval.tick() => {
-                    for peer_id in self.peer_states.keys() {
+                    let peers = self.network_globals.peers.read().await;
+                    for peer_id in peers.keys() {
                         let request = NetworkRequest::GetPeerStatus(*peer_id);
                         self.send_network_message(request).await;
                         debug!("Requested status from peer {}", peer_id);
@@ -125,63 +126,68 @@ where
                     }
                 }
             }
-            SyncManagerMessage::NewPeer(peer_id) => {
-                self.peer_states.insert(peer_id, None);
-            }
-            SyncManagerMessage::DisconnectedPeer(peer_id) => {
-                // even if downloading from this peer,
-                // not resetting the download state here,
-                // expecting BatchProcessed to handle it
-                self.peer_states.remove(&peer_id);
-            }
-            SyncManagerMessage::PeerStatus((peer_id, status)) => {
-                self.peer_states.insert(peer_id, Some(status));
+            SyncManagerMessage::GossipBlockProcessed(processed_at) => {
+                self.gossip_block_processed_at = Some(processed_at);
             }
         }
     }
 
     async fn download_from_best_peer(&mut self) -> anyhow::Result<()> {
+        if let Some(last_processed) = self.gossip_block_processed_at {
+            let duration_since = Instant::now().duration_since(last_processed);
+            if duration_since < SKIP_DOWNLOAD_IF_GOSSIP_WITHIN {
+                tracing::info!(
+                    "Skipping download from best peer due to recent gossip block processing"
+                );
+                return Ok(());
+            } else {
+                debug!(
+                    "Proceeding with download from best peer, last gossip block processed {} seconds ago",
+                    duration_since.as_secs()
+                );
+            }
+        }
         let head_block = self.ledger_db.get_head_l2_block_height()?.unwrap_or(0);
-        // P2P-TODO: handle pruned blocks
+        let peers = self.network_globals.peers.read().await;
 
         // filter peers such that:
-        // - have status
-        // - has tx bodies
-        // - have head block + HEAD_BLOCK_MARGIN > local head block
-        // - last pruned block <= local head height
-
-        let best_peer = self
-            .peer_states
+        let best_peer = peers
             .iter()
-            .filter_map(|(peer_id, status_opt)| {
-                status_opt.as_ref().map(|status| (*peer_id, status))
+            // is connected
+            .filter(|(_, info)| info.is_connected)
+            // has status
+            .filter_map(|(peer_id, info)| {
+                info.status.as_ref().map(|status| (peer_id, info, status))
             })
-            .filter(|(_, status)| status.has_tx_bodies)
-            .filter(|(_, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
-            .filter(|(_, status)| {
+            // has tx bodies
+            .filter(|(_, _, status)| status.has_tx_bodies)
+            // head block + HEAD_BLOCK_MARGIN > local head block
+            .filter(|(_, _, status)| status.head_block + HEAD_BLOCK_MARGIN > head_block)
+            // last pruned block <= local head height
+            .filter(|(_, _, status)| {
                 status
                     .last_pruned_block
                     .is_none_or(|pruned_height| pruned_height <= head_block)
             })
-            .max_by_key(|(_, status)| status.head_block);
+            // pick the one with highest head block
+            .max_by_key(|(_, info, _)| (&info.score));
 
-        let Some((peer_id, _)) = best_peer else {
+        let Some((peer_id, _, _)) = best_peer else {
             warn!("No suitable peer found for downloading L2 blocks");
-            // P2P-TODO: slash some peers here
-            // may be started with peers that don't have tx bodies
+            self.report_unuseful_peers().await?;
             return Ok(());
         };
         let start = head_block + 1;
         let end = start + self.sync_blocks_count - 1;
         // P2P-TODO: dynamically change sync blocks count if there is response errors
         let request = NetworkRequest::GetL2BlockRange {
-            peer_id,
+            peer_id: *peer_id,
             start,
             end,
         };
         self.send_network_message(request).await;
         self.download_state = DownloadState::Syncing(DownloadInfo {
-            peer_id,
+            peer_id: *peer_id,
             start,
             end,
         });
@@ -199,12 +205,49 @@ where
         match error {
             BatchProcessingError::DownloadFailed => {
                 warn!("Download failed from peer {peer_id}");
-                // P2P-TODO: slash peer or reduce trust score
+                self.network_tx
+                    .send(NetworkRequest::ReportPeer(
+                        peer_id,
+                        PeerAction::MidToleranceError,
+                    ))
+                    .await
+                    .expect("Network channel closed");
             }
             BatchProcessingError::ValidationError => {
                 warn!("Validation error when downloading from peer {peer_id}");
-                // P2P-TODO: slash peer or reduce trust score
+                self.network_tx
+                    .send(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                    .await
+                    .expect("Network channel closed");
             }
         }
+    }
+
+    async fn report_unuseful_peers(&self) -> anyhow::Result<()> {
+        let head_block = self
+            .ledger_db
+            .get_head_l2_block_height()
+            .context("Failed to get head L2 block height")?
+            .unwrap_or(0);
+        let peers = self.network_globals.peers.read().await;
+
+        for (peer_id, info) in peers.iter() {
+            if let Some(status) = &info.status {
+                if status.head_block + HEAD_BLOCK_MARGIN <= head_block
+                    || status
+                        .last_pruned_block
+                        .is_some_and(|pruned_height| pruned_height > head_block)
+                {
+                    self.network_tx
+                        .send(NetworkRequest::ReportPeer(
+                            *peer_id,
+                            PeerAction::LowToleranceError,
+                        ))
+                        .await
+                        .expect("Network channel closed");
+                }
+            }
+        }
+        Ok(())
     }
 }
