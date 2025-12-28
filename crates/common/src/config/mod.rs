@@ -464,6 +464,20 @@ fn default_discovery_query_interval_secs() -> u64 {
     30
 }
 
+const LIGHTHOUSE_BOOTNODES: [&str; 4] = [
+    "enr:-Iu4QLm7bZGdAt9NSeJG0cEnJohWcQTQaI9wFLu3Q7eHIDfrI4cwtzvEW3F3VbG9XdFXlrHyFGeXPn9snTCQJ9bnMRABgmlkgnY0gmlwhAOTJQCJc2VjcDI1NmsxoQIZdZD6tDYpkpEfVo5bgiU8MGRjhcOmHGD2nErK0UKRrIN0Y3CCIyiDdWRwgiMo",
+    "enr:-Ku4QImhMc1z8yCiNJ1TyUxdcfNucje3BGwEHzodEZUan8PherEo4sF7pPHPSIB1NNuSg5fZy7qFsjmUKs2ea1Whi0EBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQOVphkDqal4QzPMksc5wnpuC3gvSC8AfbFOnZY_On34wIN1ZHCCIyg",
+    "enr:-LK4QA8FfhaAjlb_BXsXxSfiysR7R52Nhi9JBt4F8SPssu8hdE1BXQQEtVDC3qStCW60LSO7hEsVHv5zm8_6Vnjhcn0Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhAN4aBKJc2VjcDI1NmsxoQJerDhsJ-KxZ8sHySMOCmTO6sHM3iCFQ6VMvLTe948MyYN0Y3CCI4yDdWRwgiOM",
+    "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
+];
+
+fn default_discovery_bootnodes() -> Vec<String> {
+    LIGHTHOUSE_BOOTNODES
+        .iter()
+        .map(|enr| (*enr).to_string())
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "default_discovery_enabled")]
@@ -475,7 +489,7 @@ pub struct DiscoveryConfig {
     pub enr_tcp_port: Option<u16>,
     #[serde(default)]
     pub private_key_path: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(default = "default_discovery_bootnodes")]
     pub bootnodes: Vec<String>,
     #[serde(default = "default_discovery_target_peers")]
     pub target_peers: usize,
@@ -492,7 +506,7 @@ impl Default for DiscoveryConfig {
             enr_udp_port: None,
             enr_tcp_port: None,
             private_key_path: None,
-            bootnodes: Vec::new(),
+            bootnodes: default_discovery_bootnodes(),
             target_peers: default_discovery_target_peers(),
             query_interval_secs: default_discovery_query_interval_secs(),
         }
@@ -557,7 +571,7 @@ impl FromEnv for DiscoveryConfig {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(default_discovery_bootnodes);
 
         let target_peers = read_env("NETWORK_DISCOVERY_TARGET_PEERS")
             .ok()

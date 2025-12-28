@@ -15,7 +15,7 @@ use libp2p::{
 };
 use rand::{rngs::OsRng, RngCore};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 const HEX_PREFIX: &str = "0x";
 
@@ -39,12 +39,11 @@ impl DiscoveryService {
         }
     }
 
-    pub async fn random_lookup(&self) -> Result<()> {
+    pub async fn random_lookup(&self) -> Result<Vec<Enr<CombinedKey>>> {
         let target = enr::NodeId::random();
         self.discv5
             .find_node(target)
             .await
-            .map(|_| ())
             .map_err(|e| anyhow::anyhow!("discv5 query failed: {e:?}"))
     }
 
@@ -53,6 +52,20 @@ impl DiscoveryService {
             let enr: Enr<CombinedKey> = record
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid ENR {record}: {e}"))?;
+            let addresses = enr_multiaddrs(&enr);
+            if addresses.is_empty() {
+                info!(
+                    "Added discv5 bootnode {:?} without advertised multiaddrs",
+                    enr.node_id()
+                );
+            } else {
+                let addrs = addresses
+                    .iter()
+                    .map(|addr| addr.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                info!("Added discv5 bootnode {:?} at {addrs}", enr.node_id());
+            }
             self.discv5
                 .add_enr(enr)
                 .map_err(|e| anyhow::anyhow!("Failed to add ENR {record}: {e}"))?;
@@ -62,9 +75,14 @@ impl DiscoveryService {
 
     pub fn update_socket_from_multiaddr(&self, addr: &Multiaddr) {
         if let Some((socket, is_tcp)) = multiaddr_to_socket(addr) {
-            if self.discv5.update_local_enr_socket(socket, is_tcp) {
-                info!("Updated discv5 ENR socket to {socket}");
-            }
+            self.update_socket(socket, is_tcp);
+        }
+    }
+
+    pub fn update_socket(&self, socket: SocketAddr, is_tcp: bool) {
+        if self.discv5.update_local_enr_socket(socket, is_tcp) {
+            info!("Updated discv5 ENR socket to {socket}");
+            info!("Local discv5 ENR: {}", self.discv5.local_enr().to_base64());
         }
     }
 
@@ -90,6 +108,10 @@ pub(crate) async fn start_service(
     enr_key: CombinedKey,
 ) -> Result<DiscoveryComponents> {
     let local_enr = build_local_enr(config, &enr_key)?;
+    if config.enr_address.is_none() {
+        warn!("discv5 is enabled but NETWORK_DISCOVERY_ENR_ADDRESS is not set");
+    }
+    info!("Local discv5 ENR: {}", local_enr.to_base64());
     let listen_config = listen_config(config.udp_bind);
     let discv5_config = ConfigBuilder::new(listen_config).build();
     let mut discv5 = Discv5::new(local_enr.clone(), enr_key, discv5_config)
@@ -343,6 +365,7 @@ mod tests {
         config.enr_udp_port = Some(config.udp_bind.port());
         config.enr_tcp_port = Some(config.udp_bind.port());
         config.private_key_path = Some(tmp_dir.path().join("disc.key"));
+        config.bootnodes = Vec::new(); // avoid hitting default public bootnodes in tests
 
         let (_libp2p_kp, enr_key) = prepare_identity(&config).expect("identity generation");
         let enr_key = enr_key.expect("discovery key");
@@ -366,10 +389,12 @@ mod tests {
         config.enr_udp_port = Some(config.udp_bind.port());
         config.enr_tcp_port = Some(config.udp_bind.port());
         config.private_key_path = Some(base_path.join("disc.key"));
+        config.bootnodes = Vec::new(); // keep tests fully local
         config
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+
     async fn discv5_discovers_bootnode_peer() {
         let tmp_a = tempfile::tempdir().unwrap();
         let tmp_b = tempfile::tempdir().unwrap();

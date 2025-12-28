@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -16,6 +17,7 @@ use libp2p::{
     gossipsub, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+use std::sync::mpsc as std_mpsc;
 use tokio::{
     runtime::Handle,
     select,
@@ -49,6 +51,7 @@ struct Network {
     discovery: Option<DiscoveryService>,
     discovery_events: Option<mpsc::Receiver<Discv5Event>>,
     discovery_interval: Option<Interval>,
+    discovery_advertised_ip: Option<IpAddr>,
 }
 
 impl Network {
@@ -99,9 +102,16 @@ impl Network {
         // subscribes to our topic
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
+        let discovery_config = network_config.discovery.clone();
+        let discovery_advertised_ip = discovery_config.enr_address;
+        let listen_udp_port = discovery_config.enr_udp_port.unwrap_or(0);
+        let listen_tcp_port = discovery_config.enr_tcp_port.unwrap_or(0);
+
         // Listen on all interfaces and whatever port the OS assigns
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on(
+            format!("/ip4/0.0.0.0/udp/{listen_udp_port}/quic-v1").parse()?,
+        )?;
+        swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{listen_tcp_port}").parse()?)?;
 
         let dial_addr = network_config.dial_addr;
 
@@ -119,11 +129,25 @@ impl Network {
         {
             let handle = Handle::try_current()
                 .map_err(|_| anyhow!("Tokio runtime is required for discv5 discovery"))?;
+            let (tx, rx) = std_mpsc::channel();
+            let discovery_config_clone = discovery_config.clone();
+            handle.spawn(async move {
+                let result = start_service(&discovery_config_clone, enr_key).await;
+                let _ = tx.send(result);
+            });
             let DiscoveryComponents {
-                service, event_rx, ..
-            } = handle.block_on(start_service(&network_config.discovery, enr_key))?;
+                service,
+                event_rx,
+                local_enr,
+            } = rx
+                .recv()
+                .map_err(|_| anyhow!("Failed to start discv5 service: channel closed"))??;
+            
+            // Log the local ENR so users can copy it for bootstrapping other nodes
+            info!("🔍 Local discv5 ENR (use this as bootnode for other nodes): {}", local_enr.to_base64());
+            
             let mut interval = tokio::time::interval(Duration::from_secs(
-                network_config.discovery.query_interval_secs,
+                discovery_config.query_interval_secs,
             ));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             (Some(service), Some(event_rx), Some(interval))
@@ -138,6 +162,7 @@ impl Network {
             discovery,
             discovery_events,
             discovery_interval,
+            discovery_advertised_ip,
         })
     }
 
@@ -179,12 +204,33 @@ impl Network {
                             }
                         }
                         SwarmEvent::NewListenAddr { address, .. } => {
+                            if let Some(discovery) = &self.discovery {
+                            if let Some((socket, is_tcp)) =
+                                discovery::multiaddr_to_socket(&address)
+                            {
+                                if is_tcp {
+                                    // Avoid overwriting the discv5 UDP port with libp2p QUIC.
+                                    let socket = if let Some(advertised_ip) =
+                                        self.discovery_advertised_ip
+                                    {
+                                        SocketAddr::new(advertised_ip, socket.port())
+                                    } else {
+                                        socket
+                                    };
+                                    if !socket.ip().is_unspecified() {
+                                        discovery.update_socket(socket, true);
+                                    }
+                                }
+                            }
+                            }
                             info!("Local node is listening on {address}");
                         }
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            info!("Connected to peer {peer_id}");
                             return Ok(NetworkEvent::NewPeer(peer_id));
                         }
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            info!("Disconnected from peer {peer_id}");
                             return Ok(NetworkEvent::DisconnectedPeer(peer_id));
                         }
                         _ => {}
@@ -245,9 +291,23 @@ impl Network {
         enr: discv5::enr::Enr<CombinedKey>,
     ) -> Option<NetworkEvent> {
         let peer_id = enr_peer_id(&enr)?;
+        let node_id = enr.node_id();
         let addresses = enr_multiaddrs(&enr);
         if addresses.is_empty() {
-            warn!("Discovered peer {peer_id} without reachable multiaddrs");
+            warn!(
+                "discv5 discovered peer {} (node {:?}) without reachable multiaddrs",
+                peer_id, node_id
+            );
+        } else {
+            let addrs = addresses
+                .iter()
+                .map(|addr| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            info!(
+                "discv5 discovered peer {} (node {:?}) at {addrs}",
+                peer_id, node_id
+            );
         }
         for addr in addresses {
             if let Err(err) = self.swarm.dial(addr.clone()) {
