@@ -11,6 +11,10 @@ set -e
 NODE_TYPE=${1:-node1}
 BOOTNODE_ENR=${2:-""}
 
+MOCK_DA_DB_PATH=${MOCK_DA_DB_PATH:-$HOME/.citrea-mock-da}
+mkdir -p "$MOCK_DA_DB_PATH"
+DA_DB_PATH=$(cd "$MOCK_DA_DB_PATH" && pwd)
+
 # Clean up function
 cleanup() {
     echo "Cleaning up..."
@@ -28,9 +32,10 @@ case $NODE_TYPE in
         echo ""
         
         mkdir -p /tmp/citrea-test-node1
+        echo "Using shared mock DA db path: $DA_DB_PATH"
         
-        # Create custom config for node1 with different DB path
-        cat > /tmp/citrea-test-node1/rollup_config.toml << 'EOF'
+        # Create custom config for node1 with shared mock DA DB
+        cat > /tmp/citrea-test-node1/rollup_config.toml << EOF
 [public_keys]
 sequencer_public_key = "036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f7"
 sequencer_da_pub_key = "02588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9"
@@ -38,7 +43,7 @@ prover_da_pub_key = "03eedab888e45f3bdc3ec9918c491c11e5cf7af0a91f38b97fbc1e135ae
 
 [da]
 sender_address = "02588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9"
-db_path = "/tmp/citrea-test-node1/da-db"
+db_path = "$DA_DB_PATH"
 
 [storage]
 path = "/tmp/citrea-test-node1/db"
@@ -88,8 +93,9 @@ EOF
         echo ""
         
         mkdir -p /tmp/citrea-test-node2
+        echo "Using shared mock DA db path: $DA_DB_PATH"
         
-        # Create custom config for node2 with different DB path and RPC port
+        # Create custom config for node2 with shared mock DA DB and RPC port override
         cat > /tmp/citrea-test-node2/rollup_config.toml << EOF
 [public_keys]
 sequencer_public_key = "036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f7"
@@ -98,7 +104,7 @@ prover_da_pub_key = "03eedab888e45f3bdc3ec9918c491c11e5cf7af0a91f38b97fbc1e135ae
 
 [da]
 sender_address = "02588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9"
-db_path = "/tmp/citrea-test-node2/da-db"
+db_path = "$DA_DB_PATH"
 
 [storage]
 path = "/tmp/citrea-test-node2/db"

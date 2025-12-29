@@ -24,6 +24,7 @@ Node3 (full node):
 
 Optional env overrides:
   CITREA_ROOT, CITREA_BIN
+  MOCK_DA_DB_PATH
   NODE1_DATA_DIR, NODE2_DATA_DIR
   NODE1_DISCOVERY_UDP_PORT, NODE2_DISCOVERY_UDP_PORT
   NODE1_P2P_TCP_PORT, NODE2_P2P_TCP_PORT
@@ -183,6 +184,12 @@ check_port_available() {
   warn "Skipping port availability check for $proto/$port (no lsof or ss)."
 }
 
+resolve_da_db_path() {
+  local path="${MOCK_DA_DB_PATH:-$HOME/.citrea-mock-da}"
+  mkdir -p "$path"
+  (cd "$path" && pwd)
+}
+
 write_node1_config() {
   local config_path=$1
   local data_dir=$2
@@ -190,6 +197,7 @@ write_node1_config() {
   local discovery_udp_port=$4
   local p2p_tcp_port=$5
   local sequencer_rpc_port=$6
+  local da_db_path=$7
 
   cat > "$config_path" <<EOF
 [public_keys]
@@ -199,7 +207,7 @@ prover_da_pub_key = ""
 
 [da]
 sender_address = "02588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9"
-db_path = "$data_dir/da-db"
+db_path = "$da_db_path"
 
 [storage]
 path = "$data_dir/db"
@@ -236,6 +244,7 @@ write_node2_config() {
   local sequencer_url=$7
   local bootnode_enr=$8
   local dial_addr=$9
+  local da_db_path=${10}
 
   cat > "$config_path" <<EOF
 [public_keys]
@@ -245,7 +254,7 @@ prover_da_pub_key = "03eedab888e45f3bdc3ec9918c491c11e5cf7af0a91f38b97fbc1e135ae
 
 [da]
 sender_address = "02588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9"
-db_path = "$data_dir/da-db"
+db_path = "$da_db_path"
 
 [storage]
 path = "$data_dir/db"
@@ -302,7 +311,8 @@ run_node1() {
   check_port_available "tcp" "$sequencer_rpc_port"
 
   local config_path="$data_dir/rollup_config.toml"
-  write_node1_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$sequencer_rpc_port"
+  local da_db_path="$DA_DB_PATH"
+  write_node1_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$sequencer_rpc_port" "$da_db_path"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -318,6 +328,7 @@ run_node1() {
   log "Sequencer RPC URL: http://$public_ip:$sequencer_rpc_port"
   log "Discovery UDP port (discv5 ENR): $discovery_udp_port"
   log "P2P TCP port: $p2p_tcp_port"
+  log "Mock DA db path: $da_db_path"
   log "Rollup config: $config_path"
   log "Open/forward on firewall/NAT: UDP $discovery_udp_port, TCP $p2p_tcp_port, TCP $sequencer_rpc_port"
   log "Validation: the Local discv5 ENR line should include $public_ip and udp:$discovery_udp_port"
@@ -374,7 +385,8 @@ run_node2() {
 
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
-  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr"
+  local da_db_path="$DA_DB_PATH"
+  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr" "$da_db_path"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -392,6 +404,7 @@ run_node2() {
   log "Sequencer RPC URL: $sequencer_url"
   log "Discovery UDP port (discv5 ENR): $discovery_udp_port"
   log "P2P TCP port: $p2p_tcp_port"
+  log "Mock DA db path: $da_db_path"
   log "Rollup config: $config_path"
   log "Direct dial target: ${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   log "Open/forward on firewall/NAT: UDP $discovery_udp_port, TCP $p2p_tcp_port"
@@ -447,7 +460,8 @@ run_node3() {
 
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
-  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr"
+  local da_db_path="$DA_DB_PATH"
+  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr" "$da_db_path"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -465,6 +479,7 @@ run_node3() {
   log "Sequencer RPC URL: $sequencer_url"
   log "Discovery UDP port (discv5 ENR): $discovery_udp_port"
   log "P2P TCP port: $p2p_tcp_port"
+  log "Mock DA db path: $da_db_path"
   log "Rollup config: $config_path"
   log "Direct dial target: ${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   log "Open/forward on firewall/NAT: UDP $discovery_udp_port, TCP $p2p_tcp_port"
@@ -487,6 +502,7 @@ main() {
   [[ -f "$SEQUENCER_CONFIG" ]] || die "Missing sequencer config: $SEQUENCER_CONFIG"
 
   CITREA_BIN=$(select_citrea_bin)
+  DA_DB_PATH=$(resolve_da_db_path)
 
   case "$node_type" in
     node1)
