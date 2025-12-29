@@ -24,6 +24,7 @@ Node3 (full node):
 
 Optional env overrides:
   CITREA_ROOT, CITREA_BIN
+  ROLLUP_CONFIG_TEMPLATE (default: resources/configs/network/rollup_config.toml)
   MOCK_DA_DB_PATH
   NODE1_DATA_DIR, NODE2_DATA_DIR
   NODE1_DISCOVERY_UDP_PORT, NODE2_DISCOVERY_UDP_PORT
@@ -190,6 +191,55 @@ resolve_da_db_path() {
   (cd "$path" && pwd)
 }
 
+write_rollup_config_from_template() {
+  local config_path=$1
+  local template_path=$2
+  local da_db_path=$3
+  local storage_path=$4
+  local rpc_host=$5
+  local rpc_port=$6
+  local sequencer_url=$7
+  local discovery_udp_port=$8
+  local discovery_enr_address=$9
+  local discovery_tcp_port=${10}
+  local discovery_key_path=${11}
+  local bootnodes=${12:-}
+  local target_peers=${13:-32}
+  local query_interval=${14:-30}
+  local dial_addr=${15:-}
+
+  cp "$template_path" "$config_path"
+
+  perl -0pi -e "s|(?m)^db_path = \".*\"|db_path = \"$da_db_path\"|" "$config_path"
+  perl -0pi -e "s|(?m)^path = \".*\"|path = \"$storage_path\"|" "$config_path"
+  perl -0pi -e "s|(?m)^bind_host = \".*\"|bind_host = \"$rpc_host\"|" "$config_path"
+  perl -0pi -e "s|(?m)^bind_port = .*|bind_port = $rpc_port|" "$config_path"
+  perl -0pi -e "s|(?m)^sequencer_client_url = \".*\"|sequencer_client_url = \"$sequencer_url\"|" "$config_path"
+
+  local bootnodes_line="bootnodes = []"
+  if [[ -n "$bootnodes" ]]; then
+    bootnodes_line="bootnodes = [$bootnodes]"
+  fi
+
+  {
+    echo ""
+    echo "[network]"
+    if [[ -n "$dial_addr" ]]; then
+      echo "dial_addr = \"$dial_addr\""
+    fi
+    echo ""
+    echo "[network.discovery]"
+    echo "enabled = true"
+    echo "udp_bind = \"0.0.0.0:$discovery_udp_port\""
+    echo "enr_address = \"$discovery_enr_address\""
+    echo "enr_tcp_port = $discovery_tcp_port"
+    echo "private_key_path = \"$discovery_key_path\""
+    echo "$bootnodes_line"
+    echo "target_peers = $target_peers"
+    echo "query_interval_secs = $query_interval"
+  } >> "$config_path"
+}
+
 write_node1_config() {
   local config_path=$1
   local data_dir=$2
@@ -312,7 +362,7 @@ run_node1() {
 
   local config_path="$data_dir/rollup_config.toml"
   local da_db_path="$DA_DB_PATH"
-  write_node1_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$sequencer_rpc_port" "$da_db_path"
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "0.0.0.0" "$sequencer_rpc_port" "http://$public_ip:$sequencer_rpc_port" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "" 32 30 ""
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -386,7 +436,7 @@ run_node2() {
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   local da_db_path="$DA_DB_PATH"
-  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr" "$da_db_path"
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 30 "$dial_addr"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -461,7 +511,7 @@ run_node3() {
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   local da_db_path="$DA_DB_PATH"
-  write_node2_config "$config_path" "$data_dir" "$public_ip" "$discovery_udp_port" "$p2p_tcp_port" "$rpc_port" "$sequencer_url" "$bootnode_enr" "$dial_addr" "$da_db_path"
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 30 "$dial_addr"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -503,6 +553,8 @@ main() {
 
   CITREA_BIN=$(select_citrea_bin)
   DA_DB_PATH=$(resolve_da_db_path)
+  ROLLUP_CONFIG_TEMPLATE=${ROLLUP_CONFIG_TEMPLATE:-$ROOT_DIR/resources/configs/network/rollup_config.toml}
+  [[ -f "$ROLLUP_CONFIG_TEMPLATE" ]] || die "Missing rollup config template: $ROLLUP_CONFIG_TEMPLATE"
 
   case "$node_type" in
     node1)
