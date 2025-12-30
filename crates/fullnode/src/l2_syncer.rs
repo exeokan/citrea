@@ -4,18 +4,22 @@
 //! and processing them to maintain the fullnode's state.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
 use borsh::BorshDeserialize;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
-use citrea_common::l2::{apply_l2_block, commit_l2_block};
-use citrea_network::types::{BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest};
+use citrea_common::l2::{apply_l2_block, commit_l2_block, ApplyL2BlockError};
+use citrea_network::types::{
+    BlocksByRangeRequest, Eth2Request, L2SyncMessage, NetworkRequest, PeerAction,
+};
+use citrea_network::NetworkGlobals;
 use citrea_primitives::forks::fork_from_block_number;
 use citrea_primitives::types::L2BlockHash;
 use citrea_stf::runtime::CitreaRuntime;
+use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::PeerId;
 use reth_tasks::shutdown::GracefulShutdown;
 use sov_db::ledger_db::SharedLedgerOps;
@@ -35,6 +39,14 @@ use tracing::{debug, error, info, instrument};
 use crate::metrics::FULLNODE_METRICS;
 use crate::sync_manager::{BatchProcessingError, DownloadInfo, SyncManager, SyncManagerMessage};
 use crate::{InitParams, RollupPublicKeys, RunnerConfig};
+
+/// If the block is older than 5 minutes compared to the current head, we consider it old
+const OLD_GOSSIP_BLOCK_THRESHOLD: u64 = 150; // 150 blocks * 2 seconds per block = 5 minutes
+
+pub enum L2BlockProcessingError {
+    ValidationError,
+    Other(anyhow::Error),
+}
 
 /// Component responsible for synchronizing and processing L2 blocks
 ///
@@ -78,6 +90,7 @@ where
     backup_manager: Arc<BackupManager>,
     syncer_event_rx: mpsc::Receiver<L2SyncMessage>,
     network_request_tx: mpsc::Sender<NetworkRequest>,
+    network_globals: Arc<NetworkGlobals>,
 }
 
 impl<DA, DB> L2Syncer<DA, DB>
@@ -114,6 +127,7 @@ where
         include_tx_body: bool,
         syncer_event_rx: mpsc::Receiver<L2SyncMessage>,
         network_request_tx: mpsc::Sender<NetworkRequest>,
+        network_globals: Arc<NetworkGlobals>,
     ) -> Result<Self, anyhow::Error> {
         let start_l2_height = ledger_db.get_head_l2_block_height()?.unwrap_or(0) + 1;
 
@@ -135,6 +149,7 @@ where
             backup_manager,
             syncer_event_rx,
             network_request_tx,
+            network_globals,
         })
     }
 
@@ -147,12 +162,13 @@ where
     /// 4. Maintains metrics about syncing progress
     #[instrument(name = "L2Syncer", skip_all)]
     pub async fn run(&mut self, mut shutdown_signal: GracefulShutdown) {
-        let (manager_tx, manager_rx) = mpsc::channel(1);
+        let (manager_tx, manager_rx) = mpsc::channel(10);
 
         let sync_manager = SyncManager::new(
             self.ledger_db.clone(),
             manager_rx,
             self.network_request_tx.clone(),
+            self.network_globals.clone(),
             self.sync_blocks_count,
             // P2P-TODO: make these configurable
             Duration::from_secs(5),
@@ -183,8 +199,7 @@ where
     async fn process_l2_block(
         &mut self,
         l2_block_response: &L2BlockResponse,
-    ) -> anyhow::Result<()> {
-        // P2P-TODO: return custom error, slash depending on it,
+    ) -> Result<(), L2BlockProcessingError> {
         // and continue exponential backoff depending on error type
         let _l2_lock = self.backup_manager.start_l2_processing().await; // P2P-TODO: is this safe?
         let start = std::time::Instant::now();
@@ -201,13 +216,23 @@ where
             &self.sequencer_pub_key,
             self.include_tx_body,
         )
-        .await?;
+        .await;
+
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(ApplyL2BlockError::STF(_)) => {
+                return Err(L2BlockProcessingError::ValidationError);
+            }
+            Err(ApplyL2BlockError::Other(e)) => {
+                return Err(L2BlockProcessingError::Other(e));
+            }
+        };
 
         let l2_height = applied.l2_height;
         let state_root = applied.state_root;
         let block_size = applied.block_size;
 
-        commit_l2_block(&self.ledger_db, applied)?;
+        commit_l2_block(&self.ledger_db, applied).map_err(L2BlockProcessingError::Other)?;
 
         let process_duration = std::time::Instant::now()
             .saturating_duration_since(start)
@@ -262,52 +287,43 @@ where
                     .await
                     .expect("SyncManager receiver dropped");
             }
-            L2SyncMessage::PeerStatus(peer_id, response) => {
-                manager_tx
-                    .send(SyncManagerMessage::PeerStatus((peer_id, response)))
-                    .await
-                    .expect("SyncManager receiver dropped");
+            L2SyncMessage::GossipBlock(peer_id, block, message_id) => {
+                self.on_gossip_block(peer_id, *block, message_id, manager_tx)
+                    .await;
             }
-            L2SyncMessage::NewPeer(peer_id) => {
-                manager_tx
-                    .send(SyncManagerMessage::NewPeer(peer_id))
-                    .await
-                    .expect("SyncManager receiver dropped");
-            }
-            L2SyncMessage::GossipBlock(peer_id, block) => {
-                self.on_gossip_block(peer_id, block).await;
-            }
-            L2SyncMessage::DisconnectedPeer(peer_id) => {
-                manager_tx
-                    .send(SyncManagerMessage::DisconnectedPeer(peer_id))
-                    .await
-                    .expect("SyncManager receiver dropped");
-            }
-            L2SyncMessage::RPCFailed { peer_id, request } => {
-                match request {
-                    Eth2Request::Status => {
-                        // P2P-TODO: slash lightly
-                        debug!("Ignoring failed status request to peer {}", peer_id);
-                    }
-                    Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
-                        manager_tx
-                            .send(SyncManagerMessage::BatchProcessed(
-                                DownloadInfo {
-                                    peer_id,
-                                    start,
-                                    end,
-                                },
-                                Err(BatchProcessingError::DownloadFailed),
-                            ))
-                            .await
-                            .expect("SyncManager receiver dropped");
-                    }
+            L2SyncMessage::RPCFailed(peer_id, request) => match request {
+                Eth2Request::Status => {
+                    self.send_network_message(NetworkRequest::ReportPeer(
+                        peer_id,
+                        PeerAction::LowToleranceError,
+                    ))
+                    .await;
+                    debug!("Ignoring failed status request to peer {}", peer_id);
                 }
-            }
+                Eth2Request::BlocksByRange(BlocksByRangeRequest { start, end }) => {
+                    manager_tx
+                        .send(SyncManagerMessage::BatchProcessed(
+                            DownloadInfo {
+                                peer_id,
+                                start,
+                                end,
+                            },
+                            Err(BatchProcessingError::DownloadFailed),
+                        ))
+                        .await
+                        .expect("SyncManager receiver dropped");
+                }
+            },
         }
     }
 
-    async fn on_gossip_block(&mut self, peer_id: PeerId, l2_block_response: L2BlockResponse) {
+    async fn on_gossip_block(
+        &mut self,
+        peer_id: PeerId,
+        l2_block_response: L2BlockResponse,
+        message_id: MessageId,
+        manager_tx: &mpsc::Sender<SyncManagerMessage>,
+    ) {
         debug!("Received gossiped L2 block from peer {}", peer_id);
 
         let l2_block: L2Block = match l2_block_response.clone().try_into() {
@@ -317,7 +333,15 @@ where
                     "Failed to convert L2BlockResponse to L2Block from peer {}: {}",
                     peer_id, e
                 );
-                // P2P-TODO: slash peer
+                self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                    peer_id,
+                    message_id,
+                    validation_result: MessageAcceptance::Reject,
+                })
+                .await;
+
+                self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                    .await;
                 return;
             }
         };
@@ -330,9 +354,17 @@ where
             .verify_l2_block(&l2_block, &self.sequencer_pub_key, current_spec)
             .is_err()
         {
-            // P2P-TODO: slash peer
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Reject,
+            })
+            .await;
+
+            self.send_network_message(NetworkRequest::ReportPeer(peer_id, PeerAction::Fatal))
+                .await;
             return;
-        }
+        };
 
         let head_height = self
             .ledger_db
@@ -340,37 +372,74 @@ where
             .expect("DB error")
             .unwrap_or(0);
 
-        // P2P-TODO: perform more checks here regarding the block, even if we can't process it fully
-        // P2P-TODO: research propagating gossiped blocks further
-        if height == head_height + 1 {
-            if let Err(e) = self
-                .process_l2_blocks_with_backoff(vec![l2_block_response])
-                .await
-            {
-                error!(
-                    "Failed to process gossiped L2 block at height {}: {}",
-                    height, e
-                );
-            }
-        } else {
-            info!(
-                "Ignoring gossiped L2 block at height {}: current head is {}",
-                height, head_height
-            );
+        if height + OLD_GOSSIP_BLOCK_THRESHOLD < head_height {
+            self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+                peer_id,
+                message_id,
+                validation_result: MessageAcceptance::Reject,
+            })
+            .await;
+            return;
         }
+
+        self.send_network_message(NetworkRequest::GossipBlockValidationResult {
+            peer_id,
+            message_id,
+            validation_result: MessageAcceptance::Accept, // propagate message
+        })
+        .await;
+
+        if height != head_height + 1 {
+            // If block is not the next expected block, ignore it (no slashing)
+            return;
+        }
+
+        self.process_l2_blocks_with_backoff(vec![l2_block_response])
+            .await
+            // we don't slash the peer here, must be sequencer fault.
+            .expect("Failed to process gossiped L2 block that is validated, killing L2Syncer...");
+        info!(
+            "Successfully processed gossiped L2 block at height {}",
+            height
+        );
+        manager_tx
+            .send(SyncManagerMessage::GossipBlockProcessed(Instant::now()))
+            .await
+            .expect("SyncManager receiver dropped");
     }
 
     async fn process_l2_blocks_with_backoff(
         &mut self,
         l2_blocks: Vec<L2BlockResponse>,
     ) -> anyhow::Result<()> {
+        let head_height = self
+            .ledger_db
+            .get_head_l2_block_height()
+            .expect("DB error")
+            .unwrap_or(0);
+
+        let first_block_height: u64 = l2_blocks
+            .first()
+            .expect("Block batch is non-empty")
+            .header
+            .height
+            .to();
+        if first_block_height < head_height + 1 {
+            tracing::warn!(
+                "Skipping processing of L2 blocks starting at height {} <= current head height {}",
+                first_block_height,
+                head_height
+            );
+            return Ok(());
+        }
+
         for l2_block in l2_blocks {
             let mut backoff = ExponentialBackoff::default();
             loop {
                 let result = self.process_l2_block(&l2_block).await;
                 match result {
                     Ok(_) => break,
-                    Err(e) => {
+                    Err(L2BlockProcessingError::Other(e)) => {
                         error!(
                             "Failed to process L2 block {}: {}",
                             l2_block.header.height, e
@@ -380,9 +449,27 @@ where
                         );
                         tokio::time::sleep(backoff_duration).await;
                     }
+                    Err(L2BlockProcessingError::ValidationError) => {
+                        error!(
+                            "Failed to process L2 block {}: validation error, not retrying",
+                            l2_block.header.height
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Validation error while processing L2 block {}",
+                            l2_block.header.height
+                        ));
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    async fn send_network_message(&self, request: NetworkRequest) {
+        // P2P-TODO: this is blocking if the channel is full
+        self.network_request_tx
+            .send(request)
+            .await
+            .expect("Network channel closed");
     }
 }

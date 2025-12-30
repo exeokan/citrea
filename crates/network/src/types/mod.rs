@@ -1,7 +1,11 @@
+use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::request_response::InboundRequestId;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+
+mod peers;
+pub use peers::{PeerAction, PeerInfo, PeerStatus, Score, SCORE_HALFLIFE};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlocksByRangeRequest {
@@ -16,18 +20,11 @@ pub enum Eth2Request {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusResponse {
-    pub head_block: u64,
-    pub last_pruned_block: Option<u64>,
-    // P2P-TODO: add include_tx_body here
-    // and dont pull blocks from this peer/ disconnect if necessary
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Eth2Response {
-    Status(StatusResponse),
+    Status(PeerStatus),
     // P2P-TODO: use Result<Vec<L2BlockResponse>, Error> instead,
     // Errors: invalid range, too many blocks, size limit exceeded
+    // on size limit we might be getting IO error!
     BlocksByRange(Vec<L2BlockResponse>),
 }
 
@@ -43,24 +40,27 @@ pub enum NetworkRequest {
         start: u64,
         end: u64,
     },
-    ReportPeer(PeerId), // P2P-TODO: add degree/reason
+    ReportPeer(PeerId, PeerAction),
     GetPeerStatus(PeerId),
-}
-
-pub enum L2SyncMessage {
-    GossipBlock(PeerId, L2BlockResponse),
-    BlockBatch(PeerId, Vec<L2BlockResponse>),
-    NewPeer(PeerId),
-    DisconnectedPeer(PeerId),
-    PeerStatus(PeerId, StatusResponse),
-    RPCFailed {
+    GossipBlockValidationResult {
         peer_id: PeerId,
-        request: Eth2Request,
+        message_id: MessageId,
+        validation_result: MessageAcceptance,
     },
 }
 
+pub enum L2SyncMessage {
+    GossipBlock(PeerId, Box<L2BlockResponse>, MessageId),
+    BlockBatch(PeerId, Vec<L2BlockResponse>),
+    RPCFailed(PeerId, Eth2Request),
+}
+
 pub(crate) enum NetworkEvent {
-    GossipBlock(PeerId, L2BlockResponse),
+    GossipBlock {
+        peer_id: PeerId,
+        l2_block_response: L2BlockResponse,
+        message_id: MessageId,
+    },
     RequestReceived {
         request_id: InboundRequestId,
         request: Eth2Request,
@@ -73,6 +73,4 @@ pub(crate) enum NetworkEvent {
         peer_id: PeerId,
         request: Eth2Request,
     },
-    NewPeer(PeerId),
-    DisconnectedPeer(PeerId),
 }

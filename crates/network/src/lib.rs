@@ -2,8 +2,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
-
 use anyhow::{anyhow, Result};
 use citrea_common::NetworkConfig;
 use discv5::enr::CombinedKey;
@@ -11,8 +11,9 @@ use discv5::Event as Discv5Event;
 use futures::future::Either;
 use futures::stream::StreamExt;
 use gossipsub::Message as GossipsubMessage;
+use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{
     gossipsub, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
@@ -25,6 +26,7 @@ use tokio::{
     time::{Interval, MissedTickBehavior},
 };
 use tracing::{error, info, warn};
+use tokio::sync::RwLock;
 
 mod discovery;
 use self::discovery::{
@@ -37,6 +39,23 @@ pub mod service;
 pub mod types;
 
 pub use service::NetworkService;
+pub use types::{NetworkRequest, PeerInfo, PeerStatus};
+
+use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
+use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
+
+mod peer_manager;
+#[derive(Default)]
+pub struct NetworkGlobals {
+    pub peers: RwLock<HashMap<PeerId, PeerInfo>>,
+}
+impl NetworkGlobals {
+    pub fn new() -> Self {
+        Self {
+            peers: RwLock::new(HashMap::new()),
+        }
+    }
+}
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
@@ -46,16 +65,18 @@ struct MyBehaviour {
 
 struct Network {
     swarm: Swarm<MyBehaviour>,
+    peer_manager: PeerManager,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
     discovery: Option<DiscoveryService>,
     discovery_events: Option<mpsc::Receiver<Discv5Event>>,
     discovery_interval: Option<Interval>,
     discovery_advertised_ip: Option<IpAddr>,
+    connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
 }
 
 impl Network {
-    fn build(network_config: NetworkConfig) -> Result<Self> {
+    fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
         let heartbeat_interval =
             Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
 
@@ -155,14 +176,21 @@ impl Network {
             (None, None, None)
         };
 
+        let peer_manager = PeerManager::new(
+            network_globals.clone(),
+            network_config.target_peers,
+            SCORE_HALFLIFE,
+        );
         Ok(Self {
             swarm,
+            peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             discovery,
             discovery_events,
             discovery_interval,
             discovery_advertised_ip,
+            connection_id_by_peer_id: HashMap::new(),
         })
     }
 
@@ -225,13 +253,31 @@ impl Network {
                             }
                             info!("Local node is listening on {address}");
                         }
-                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                            info!("Connected to peer {peer_id}");
-                            return Ok(NetworkEvent::NewPeer(peer_id));
+                        SwarmEvent::ConnectionEstablished {
+                            peer_id,
+                            connection_id,
+                            ..
+                        } => {
+                            info!("Connection established with peer {peer_id} (connection id: {connection_id})");
+                            self.connection_id_by_peer_id
+                                .entry(peer_id)
+                                .or_default()
+                                .push(connection_id);
+                            self.peer_manager.connected_peer(&peer_id).await;
                         }
-                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                            info!("Disconnected from peer {peer_id}");
-                            return Ok(NetworkEvent::DisconnectedPeer(peer_id));
+                        SwarmEvent::ConnectionClosed {
+                            peer_id,
+                            connection_id,
+                            ..
+                        } => {
+                            info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
+                            if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
+                                connections.retain(|&id| id != connection_id);
+                                if connections.is_empty() {
+                                    self.connection_id_by_peer_id.remove(&peer_id);
+                                    self.peer_manager.disconnected_peer(&peer_id).await;
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -371,25 +417,35 @@ impl Network {
     async fn on_gossipsub_event(&mut self, event: gossipsub::Event) -> Option<NetworkEvent> {
         match event {
             gossipsub::Event::Message {
-                propagation_source: peer_id,
-                message_id: _id,
+                propagation_source,
+                message_id,
                 message,
             } => {
-                // P2P-TODO: research gossipsub broadcast guarantees
-                let GossipsubMessage { data, .. } = message; // P2P-TODO: consider handling topic/peer_id/sequence_number
+                let GossipsubMessage { data, .. } = message;
                 let l2_block_response: L2BlockResponse = match serde_json::from_slice(&data) {
                     Ok(msg) => msg,
-                    // P2P-TODO: who to slash for bad messages, propagation source or the original sender?
-                    Err(_) => return None,
+                    Err(_) => {
+                        self.report_message_validation_result(
+                            &propagation_source,
+                            message_id,
+                            MessageAcceptance::Reject,
+                        );
+                        return None;
+                    }
                 };
-                Some(NetworkEvent::GossipBlock(peer_id, l2_block_response))
+                Some(NetworkEvent::GossipBlock {
+                    peer_id: propagation_source,
+                    l2_block_response,
+                    message_id,
+                })
             }
-            gossipsub::Event::GossipsubNotSupported { .. } => {
-                // P2P-TODO: ban peer
+            gossipsub::Event::GossipsubNotSupported { peer_id } => {
+                self.report_peer(&peer_id, PeerAction::Fatal).await;
                 None
             }
-            gossipsub::Event::SlowPeer { .. } => {
-                // P2P-TODO: slash peer
+            gossipsub::Event::SlowPeer { peer_id, .. } => {
+                self.report_peer(&peer_id, PeerAction::HighToleranceError)
+                    .await;
                 None
             }
             gossipsub::Event::Subscribed { .. } | gossipsub::Event::Unsubscribed { .. } => None,
@@ -435,7 +491,6 @@ impl Network {
                     .pending_outbound_requests
                     .remove(&request_id)
                     .expect("Failed outbound request must be tracked");
-                // P2P-TODO: slashing based on error here?
                 Some(NetworkEvent::RPCFailed {
                     peer_id: peer,
                     request: failed_request,
@@ -449,5 +504,41 @@ impl Network {
             }
             request_response::Event::ResponseSent { .. } => None,
         }
+    }
+
+    /// Informs the gossipsub about the result of a message validation.
+    /// If the message is valid it will get propagated by gossipsub.
+    pub fn report_message_validation_result(
+        &mut self,
+        propagation_source: &PeerId,
+        message_id: MessageId,
+        validation_result: MessageAcceptance,
+    ) {
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .report_message_validation_result(&message_id, propagation_source, validation_result);
+    }
+
+    pub fn disconnect_peer(&mut self, peer_id: &PeerId) {
+        let Some(connections) = self.connection_id_by_peer_id.get(peer_id) else {
+            error!("No connections found for peer {peer_id}, cannot disconnect");
+            return;
+        };
+        for connection_id in connections {
+            if !self.swarm.close_connection(*connection_id) {
+                error!(
+                    "Failed to close connection to peer {peer_id}, connection id: {connection_id}"
+                );
+            }
+        }
+    }
+
+    pub async fn peer_manager_heartbeat(&mut self) -> HeartbeatResult {
+        self.peer_manager.heartbeat().await
+    }
+
+    pub async fn report_peer(&mut self, peer_id: &PeerId, action: PeerAction) -> ReportPeerResult {
+        self.peer_manager.report_peer(peer_id, action).await
     }
 }

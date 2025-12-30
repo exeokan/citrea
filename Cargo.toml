@@ -4,7 +4,6 @@ members = [
   # Citrea
   "bin/citrea",
   "bin/cli",
-  "bin/network-test",
   "crates/batch-prover",
   "crates/bitcoin-da",
   "crates/citrea-stf",
