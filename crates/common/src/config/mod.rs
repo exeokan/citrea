@@ -477,20 +477,15 @@ impl Default for NetworkConfig {
 const fn default_heartbeat_interval_secs() -> u64 {
     10
 }
-const fn default_test_message_period_secs() -> u64 {
-    10
-}
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GossipsubConfig {
     pub heartbeat_interval_secs: u64,
-    pub test_message_period_secs: u64,
 }
 
 impl Default for GossipsubConfig {
     fn default() -> Self {
         Self {
             heartbeat_interval_secs: default_heartbeat_interval_secs(),
-            test_message_period_secs: default_test_message_period_secs(),
         }
     }
 }
@@ -501,13 +496,8 @@ impl FromEnv for GossipsubConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(default_heartbeat_interval_secs);
-        let test_message_period_secs = read_env("GOSSIPSUB_TEST_MESSAGE_PERIOD_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_test_message_period_secs);
         Ok(Self {
             heartbeat_interval_secs,
-            test_message_period_secs,
         })
     }
 }

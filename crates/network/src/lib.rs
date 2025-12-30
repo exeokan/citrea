@@ -1,9 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::Result;
 use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
@@ -15,16 +9,21 @@ use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+use crate::config::build_gossipsub_config;
 use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
+mod config;
 mod peer_manager;
 mod rpc;
 pub mod service;
 pub mod types;
+
 pub use service::NetworkService;
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 
@@ -57,9 +56,6 @@ struct Network {
 
 impl Network {
     fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
-        let heartbeat_interval =
-            Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
-
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -70,24 +66,10 @@ impl Network {
             .with_quic()
             .with_behaviour(|key| {
                 // To content-address message, we can take the hash of message and use it as an ID.
-                let message_id_fn = |message: &gossipsub::Message| {
-                    let mut s = DefaultHasher::new();
-                    message.data.hash(&mut s);
-                    gossipsub::MessageId::from(s.finish().to_string())
-                };
-                // Set a custom gossipsub configuration
-                let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(heartbeat_interval) // This is set to aid debugging by not cluttering the log space
-                    .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message
-                    // signing)
-                    .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
-                    .build()
-                    .map_err(tokio::io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
-
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossipsub_config,
+                    build_gossipsub_config(&network_config.gossipsub_config)?,
                 )?;
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
