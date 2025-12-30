@@ -52,6 +52,7 @@ struct Network {
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
+    discovery_enabled: bool,
 }
 
 impl Network {
@@ -84,24 +85,17 @@ impl Network {
             })?
             .build();
 
-        // Create a Gossipsub topic
         let topic = gossipsub::IdentTopic::new("new-head");
-        // subscribes to our topic
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
         // Listen on all interfaces and whatever port the OS assigns
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-
-        let dial_addr = network_config.dial_addr;
-
-        // P2P-TODO: implement for multiple addresses
-        // Dial the peer identified by the multi-address given as the second
-        // command-line argument, if any.
-        if let Some(addr) = dial_addr.as_ref() {
-            let remote: Multiaddr = addr.parse()?;
-            swarm.dial(remote)?;
-            info!("Dialed {addr}");
+        
+        for addr in network_config.dial_addresses {
+            let addr: Multiaddr = addr.parse()?;
+            info!("Dialing peer at {addr}");
+            swarm.dial(addr)?;
         }
 
         let peer_manager = PeerManager::new(
@@ -115,6 +109,7 @@ impl Network {
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             connection_id_by_peer_id: HashMap::new(),
+            discovery_enabled: network_config.discovery_enabled,
         })
     }
 
@@ -214,6 +209,9 @@ impl Network {
     async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
         match event {
             mdns::Event::Discovered(list) => {
+                if !self.discovery_enabled {
+                    return None;
+                }
                 tracing::debug!("mDNS discovered {} new peers", list.len());
                 let to_dial = self.peer_manager.discovered_peers(list).await;
                 for (peer_id, multiaddr) in to_dial {

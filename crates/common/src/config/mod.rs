@@ -451,25 +451,32 @@ const fn default_target_peers() -> usize {
     10
 }
 
+const fn default_discovery_enabled() -> bool {
+    true
+}
+
 /// Network configuration.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NetworkConfig {
-    /// Optional peer multiaddress.
+    /// Optional peer multiaddresses.
     #[serde(default)]
-    pub dial_addr: Option<String>,
+    pub dial_addresses: Vec<String>,
     /// Gossipsub configuration.
     #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
     #[serde(default = "default_target_peers")]
     pub target_peers: usize,
+    #[serde(default = "default_discovery_enabled")]
+    pub discovery_enabled: bool,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            dial_addr: None,
+            dial_addresses: Vec::new(),
             gossipsub_config: GossipsubConfig::default(),
             target_peers: default_target_peers(),
+            discovery_enabled: default_discovery_enabled(),
         }
     }
 }
@@ -504,14 +511,19 @@ impl FromEnv for GossipsubConfig {
 
 impl FromEnv for NetworkConfig {
     fn from_env() -> anyhow::Result<Self> {
-        let dial_addr = read_env("NETWORK_DIAL_ADDR").ok();
+        let dial_addresses = read_env("NETWORK_DIAL_ADDRESSES")?
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         let gossipsub_config = GossipsubConfig::from_env()?;
         let target_peers = read_env("NETWORK_TARGET_PEERS")?.parse()?;
+        let discovery_enabled = read_env("NETWORK_DISCOVERY_ENABLED")?.parse()?;
 
         Ok(Self {
-            dial_addr,
+            dial_addresses,
             gossipsub_config,
             target_peers,
+            discovery_enabled,
         })
     }
 }
