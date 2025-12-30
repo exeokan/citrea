@@ -19,10 +19,16 @@ pub struct NetworkConfig {
     /// Gossipsub configuration.
     #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
+    /// Target number of peers to maintain.
     #[serde(default = "default_target_peers")]
     pub target_peers: usize,
+    /// Whether to add peers using discovery module.
     #[serde(default = "default_discovery_enabled")]
     pub discovery_enabled: bool,
+    /// Optional UDP port for libp2p.
+    pub udp_port: Option<u16>,
+    /// Optional TCP port for libp2p.
+    pub tcp_port: Option<u16>,
 }
 
 impl Default for NetworkConfig {
@@ -32,6 +38,8 @@ impl Default for NetworkConfig {
             gossipsub_config: GossipsubConfig::default(),
             target_peers: default_target_peers(),
             discovery_enabled: default_discovery_enabled(),
+            udp_port: None,
+            tcp_port: None,
         }
     }
 }
@@ -74,12 +82,20 @@ impl FromEnv for NetworkConfig {
         let gossipsub_config = GossipsubConfig::from_env()?;
         let target_peers = read_env("NETWORK_TARGET_PEERS")?.parse()?;
         let discovery_enabled = read_env("NETWORK_DISCOVERY_ENABLED")?.parse()?;
+        let udp_port = read_env("NETWORK_UDP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let tcp_port = read_env("NETWORK_TCP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok());
 
         Ok(Self {
             dial_addresses,
             gossipsub_config,
             target_peers,
             discovery_enabled,
+            udp_port,
+            tcp_port,
         })
     }
 }

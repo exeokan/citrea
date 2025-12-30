@@ -57,6 +57,15 @@ struct Network {
 
 impl Network {
     fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
+        let NetworkConfig {
+            dial_addresses,
+            gossipsub_config,
+            target_peers,
+            discovery_enabled,
+            tcp_port,
+            udp_port,
+        } = network_config;
+
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -70,7 +79,7 @@ impl Network {
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    build_gossipsub_config(&network_config.gossipsub_config)?,
+                    build_gossipsub_config(&gossipsub_config)?,
                 )?;
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
@@ -88,11 +97,16 @@ impl Network {
         let topic = gossipsub::IdentTopic::new("new-head");
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
-        // Listen on all interfaces and whatever port the OS assigns
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        
-        for addr in network_config.dial_addresses {
+        // Listen on all interfaces
+        let tcp_port = tcp_port.unwrap_or(0);
+        let udp_port = udp_port.unwrap_or(0);
+        let udp_addr = format!("/ip4/0.0.0.0/udp/{udp_port}/quic-v1");
+        let tcp_addr = format!("/ip4/0.0.0.0/tcp/{tcp_port}");
+
+        swarm.listen_on(udp_addr.parse()?)?;
+        swarm.listen_on(tcp_addr.parse()?)?;
+
+        for addr in dial_addresses {
             let addr: Multiaddr = addr.parse()?;
             info!("Dialing peer at {addr}");
             swarm.dial(addr)?;
@@ -100,7 +114,7 @@ impl Network {
 
         let peer_manager = PeerManager::new(
             network_globals.clone(),
-            network_config.target_peers,
+            target_peers,
             SCORE_HALFLIFE,
         );
         Ok(Self {
@@ -109,7 +123,7 @@ impl Network {
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             connection_id_by_peer_id: HashMap::new(),
-            discovery_enabled: network_config.discovery_enabled,
+            discovery_enabled: discovery_enabled,
         })
     }
 
