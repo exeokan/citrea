@@ -42,7 +42,7 @@ pub use service::NetworkService;
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 
 use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
-use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
+use crate::types::{PeerAction, SCORE_HALFLIFE};
 
 mod peer_manager;
 #[derive(Default)]
@@ -360,11 +360,12 @@ impl Network {
                 warn!("Failed to dial peer {peer_id} via {addr}: {err:?}");
             }
         }
-        self.swarm
-            .behaviour_mut()
-            .gossipsub
-            .add_explicit_peer(&peer_id);
-        Some(NetworkEvent::NewPeer(peer_id))
+        // self.swarm
+        //     .behaviour_mut()
+        //     .gossipsub
+        //     .add_explicit_peer(&peer_id);
+        // Some(NetworkEvent::NewPeer(peer_id))
+        None // P2P-TODO: call peer manager
     }
 
 
