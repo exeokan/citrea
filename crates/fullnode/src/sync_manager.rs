@@ -12,6 +12,8 @@ use tracing::{debug, error, warn};
 
 const HEAD_BLOCK_MARGIN: u64 = 5;
 const SKIP_DOWNLOAD_IF_GOSSIP_WITHIN: Duration = Duration::from_secs(10);
+const DEFAULT_STATUS_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct DownloadInfo {
     pub peer_id: PeerId,
@@ -23,7 +25,6 @@ pub enum BatchProcessingError {
     DownloadFailed,
     ValidationError,
 }
-
 pub(crate) enum SyncManagerMessage {
     BatchProcessed(DownloadInfo, Result<(), BatchProcessingError>),
     GossipBlockProcessed(Instant),
@@ -59,9 +60,12 @@ where
         network_tx: mpsc::Sender<NetworkRequest>,
         network_globals: Arc<NetworkGlobals>,
         sync_blocks_count: u64,
-        status_interval: Duration,
-        sync_interval: Duration,
+        status_interval: Option<Duration>,
+        sync_interval: Option<Duration>,
     ) -> Self {
+        let status_interval = status_interval.unwrap_or(DEFAULT_STATUS_INTERVAL);
+        let sync_interval = sync_interval.unwrap_or(DEFAULT_SYNC_INTERVAL);
+        
         Self {
             ledger_db,
             event_rx,
