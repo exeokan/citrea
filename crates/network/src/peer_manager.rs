@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use libp2p::{Multiaddr, PeerId};
-use rand::seq::SliceRandom;
-
+use libp2p::PeerId;
 use crate::types::PeerAction;
 use crate::NetworkGlobals;
 
@@ -78,33 +76,25 @@ impl PeerManager {
         }
     }
 
-    pub async fn discovered_peers(
+    pub async fn should_dial_peer(
         &self,
-        peer_ids: Vec<(PeerId, Multiaddr)>,
-    ) -> Vec<(PeerId, Multiaddr)> {
+        peer_id: PeerId,
+    ) -> bool {
         let peers = self.network_globals.peers.read().await;
-        if peers.len() >= self.target_peers {
-            return vec![];
+        let connected_count = peers
+            .iter()
+            .filter(|(_, info)| info.is_connected)
+            .count();
+        if connected_count >= self.target_peers {
+            return false;
         }
 
-        let mut peers_to_dial = Vec::new();
-        for (peer_id, multiaddr) in peer_ids {
-            if let Some(peer_info) = peers.get(&peer_id) {
-                if peer_info.is_connected || peer_info.score.is_banned() {
-                    continue;
-                }
+        if let Some(peer_info) = peers.get(&peer_id) {
+            if peer_info.is_connected || peer_info.score.is_banned() {
+                return false;
             }
-            peers_to_dial.push((peer_id, multiaddr));
         }
-
-        let remaining_slots = self.target_peers - peers.len();
-        // randomly select peers to dial if more than remaining slots
-        if peers_to_dial.len() > remaining_slots {
-            let mut rng = rand::thread_rng();
-            peers_to_dial.shuffle(&mut rng);
-            peers_to_dial.truncate(remaining_slots);
-        }
-        peers_to_dial
+        true
     }
 
     pub async fn connected_peer(&self, peer_id: &PeerId) {

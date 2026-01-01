@@ -2705,7 +2705,6 @@ dependencies = [
  "citrea-common",
  "futures",
  "libp2p",
- "rand 0.8.5",
  "reth-tasks",
  "serde",
  "serde_json",
