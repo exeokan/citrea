@@ -65,7 +65,7 @@ where
     ) -> Self {
         let status_interval = status_interval.unwrap_or(DEFAULT_STATUS_INTERVAL);
         let sync_interval = sync_interval.unwrap_or(DEFAULT_SYNC_INTERVAL);
-        
+
         Self {
             ledger_db,
             event_rx,

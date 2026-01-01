@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{utils::read_env, FromEnv};
+use crate::utils::read_env;
+use crate::FromEnv;
 
 const fn default_target_peers() -> usize {
     10

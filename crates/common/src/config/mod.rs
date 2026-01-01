@@ -6,12 +6,12 @@ use citrea_primitives::PRE_TANGERINE_BRIDGE_INITIALIZE_PARAMS;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+pub use crate::config::network::{GossipsubConfig, NetworkConfig};
 pub use crate::config::rpc::RpcConfig;
-pub use crate::config::network::{NetworkConfig, GossipsubConfig};
 use crate::utils::read_env;
 
-mod rpc;
 mod network;
+mod rpc;
 
 pub trait FromEnv: Sized {
     fn from_env() -> anyhow::Result<Self>;

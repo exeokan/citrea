@@ -1,10 +1,13 @@
-use citrea_common::GossipsubConfig;
-use libp2p::gossipsub;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-pub(crate) fn build_gossipsub_config(gossipsub_config: &GossipsubConfig) -> anyhow::Result<gossipsub::Config> {
+use citrea_common::GossipsubConfig;
+use libp2p::gossipsub;
+
+pub(crate) fn build_gossipsub_config(
+    gossipsub_config: &GossipsubConfig,
+) -> anyhow::Result<gossipsub::Config> {
     let GossipsubConfig {
         heartbeat_interval_secs,
     } = gossipsub_config;

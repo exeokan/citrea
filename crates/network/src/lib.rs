@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::Result;
 use citrea_common::NetworkConfig;
 use futures::stream::StreamExt;
@@ -9,8 +12,6 @@ use libp2p::{
     gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -115,18 +116,14 @@ impl Network {
             }
         }
 
-        let peer_manager = PeerManager::new(
-            network_globals.clone(),
-            target_peers,
-            SCORE_HALFLIFE,
-        );
+        let peer_manager = PeerManager::new(network_globals.clone(), target_peers, SCORE_HALFLIFE);
         Ok(Self {
             swarm,
             peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             connection_id_by_peer_id: HashMap::new(),
-            discovery_enabled: discovery_enabled,
+            discovery_enabled,
         })
     }
 
