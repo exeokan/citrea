@@ -233,8 +233,10 @@ impl Network {
         match event {
             mdns::Event::Discovered(list) => {
                 tracing::debug!("mDNS discovered {} new peers", list.len());
-                let to_dial = self.peer_manager.discovered_peers(list).await;
-                for (peer_id, multiaddr) in to_dial {
+                for (peer_id, multiaddr) in list {
+                    if !self.peer_manager.should_dial_peer(peer_id).await {
+                        continue;
+                    }
                     if let Err(e) = self.swarm.dial(multiaddr.clone()) {
                         error!("Failed to dial discovered peer {peer_id} at {multiaddr}: {e}");
                     } else {
