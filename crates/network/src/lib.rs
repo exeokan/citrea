@@ -107,9 +107,12 @@ impl Network {
         swarm.listen_on(tcp_addr.parse()?)?;
 
         for addr in dial_addresses {
-            let addr: Multiaddr = addr.parse()?;
-            info!("Dialing peer at {addr}");
-            swarm.dial(addr)?;
+            let multiaddr: Multiaddr = addr.parse()?;
+            if let Err(e) = swarm.dial(multiaddr.clone()) {
+                error!("Failed to dial explicit peer at {multiaddr}: {e}");
+            } else {
+                info!("Dialed explicit peer at {multiaddr}");
+            }
         }
 
         let peer_manager = PeerManager::new(
