@@ -28,7 +28,7 @@ pub(crate) struct DiscoveryComponents {
 
 pub(crate) struct DiscoveryService {
     discv5: Discv5,
-    target_peers: usize,
+    target_peers: usize, // P2P-TODO: remove
 }
 
 impl DiscoveryService {

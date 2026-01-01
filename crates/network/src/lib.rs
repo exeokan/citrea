@@ -290,11 +290,12 @@ impl Network {
                         }
                     }
                     if let Some(event) = event {
-                        if let Some(network_event) = self.handle_discovery_event(event) {
+                        if let Some(network_event) = self.handle_discovery_event(event).await {
                             return Ok(network_event);
                         }
                     }
                 }
+                // P2P-TODO: this logic is moved to peer manager, remove this
                 interval = &mut interval_future => {
                     if let Some(interval) = interval {
                         self.discovery_interval = Some(interval);
@@ -311,10 +312,10 @@ impl Network {
         }
     }
 
-    fn handle_discovery_event(&mut self, event: Discv5Event) -> Option<NetworkEvent> {
+    async fn handle_discovery_event(&mut self, event: Discv5Event) -> Option<NetworkEvent> {
         match event {
-            Discv5Event::Discovered(enr) => self.handle_discovered_enr(enr),
-            Discv5Event::SessionEstablished(enr, _) => self.handle_discovered_enr(enr),
+            Discv5Event::Discovered(enr) => self.handle_discovered_enr(enr).await,
+            Discv5Event::SessionEstablished(enr, _) => self.handle_discovered_enr(enr).await,
             Discv5Event::NodeInserted { node_id, .. } => {
                 info!("discv5 inserted node {node_id}");
                 None
@@ -332,11 +333,15 @@ impl Network {
         }
     }
 
-    fn handle_discovered_enr(
+    async fn handle_discovered_enr(
         &mut self,
         enr: discv5::enr::Enr<CombinedKey>,
     ) -> Option<NetworkEvent> {
         let peer_id = enr_peer_id(&enr)?;
+        if self.peer_manager.should_dial_peer(peer_id).await {
+            return None;
+        }
+
         let node_id = enr.node_id();
         let addresses = enr_multiaddrs(&enr);
         if addresses.is_empty() {
@@ -360,12 +365,7 @@ impl Network {
                 warn!("Failed to dial peer {peer_id} via {addr}: {err:?}");
             }
         }
-        // self.swarm
-        //     .behaviour_mut()
-        //     .gossipsub
-        //     .add_explicit_peer(&peer_id);
-        // Some(NetworkEvent::NewPeer(peer_id))
-        None // P2P-TODO: call peer manager
+        None
     }
 
 
