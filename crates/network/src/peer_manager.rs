@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
+
 use crate::types::PeerAction;
 use crate::NetworkGlobals;
 
@@ -76,15 +77,9 @@ impl PeerManager {
         }
     }
 
-    pub async fn should_dial_peer(
-        &self,
-        peer_id: PeerId,
-    ) -> bool {
+    pub async fn should_dial_peer(&self, peer_id: PeerId) -> bool {
         let peers = self.network_globals.peers.read().await;
-        let connected_count = peers
-            .iter()
-            .filter(|(_, info)| info.is_connected)
-            .count();
+        let connected_count = peers.iter().filter(|(_, info)| info.is_connected).count();
         if connected_count >= self.target_peers {
             return false;
         }

@@ -234,7 +234,7 @@ impl Network {
             mdns::Event::Discovered(list) => {
                 tracing::debug!("mDNS discovered {} new peers", list.len());
                 for (peer_id, multiaddr) in list {
-                    if !self.peer_manager.should_dial_peer(peer_id.clone()).await {
+                    if !self.peer_manager.should_dial_peer(peer_id).await {
                         continue;
                     }
                     if let Err(e) = self.swarm.dial(multiaddr.clone()) {
