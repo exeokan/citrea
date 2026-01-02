@@ -77,6 +77,12 @@ impl PeerManager {
         }
     }
 
+    pub async fn needs_more_peers(&self) -> bool {
+        let peers = self.network_globals.peers.read().await;
+        let connected_count = peers.iter().filter(|(_, info)| info.is_connected).count();
+        connected_count < self.target_peers
+    }
+
     pub async fn should_dial_peer(&self, peer_id: PeerId) -> bool {
         let peers = self.network_globals.peers.read().await;
         let connected_count = peers.iter().filter(|(_, info)| info.is_connected).count();

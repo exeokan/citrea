@@ -28,15 +28,11 @@ pub(crate) struct DiscoveryComponents {
 
 pub(crate) struct DiscoveryService {
     discv5: Discv5,
-    target_peers: usize, // P2P-TODO: remove
 }
 
 impl DiscoveryService {
-    pub fn new(discv5: Discv5, target_peers: usize) -> Self {
-        Self {
-            discv5,
-            target_peers,
-        }
+    pub fn new(discv5: Discv5) -> Self {
+        Self { discv5 }
     }
 
     pub async fn random_lookup(&self) -> Result<Vec<Enr<CombinedKey>>> {
@@ -85,10 +81,6 @@ impl DiscoveryService {
             info!("Local discv5 ENR: {}", self.discv5.local_enr().to_base64());
         }
     }
-
-    pub fn target_peers(&self) -> usize {
-        self.target_peers
-    }
 }
 
 pub(crate) fn prepare_identity(
@@ -130,7 +122,7 @@ pub(crate) async fn start_service(
         .event_stream()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to subscribe to discv5 events: {e}"))?;
-    let service = DiscoveryService::new(discv5, config.target_peers);
+    let service = DiscoveryService::new(discv5);
     service.add_bootnodes(&config.bootnodes)?;
     Ok(DiscoveryComponents {
         service,

@@ -23,7 +23,6 @@ use tokio::{
     runtime::Handle,
     select,
     sync::mpsc,
-    time::{Interval, MissedTickBehavior},
 };
 use tracing::{error, info, warn};
 use tokio::sync::RwLock;
@@ -68,9 +67,8 @@ struct Network {
     peer_manager: PeerManager,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
-    discovery: Option<DiscoveryService>,
+    discovery: Option<Arc<DiscoveryService>>,
     discovery_events: Option<mpsc::Receiver<Discv5Event>>,
-    discovery_interval: Option<Interval>,
     discovery_advertised_ip: Option<IpAddr>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
 }
@@ -146,8 +144,7 @@ impl Network {
         }
 
 
-        let (discovery, discovery_events, discovery_interval) = if let Some(enr_key) = discovery_key
-        {
+        let (discovery, discovery_events) = if let Some(enr_key) = discovery_key {
             let handle = Handle::try_current()
                 .map_err(|_| anyhow!("Tokio runtime is required for discv5 discovery"))?;
             let (tx, rx) = std_mpsc::channel();
@@ -166,14 +163,10 @@ impl Network {
             
             // Log the local ENR so users can copy it for bootstrapping other nodes
             info!("🔍 Local discv5 ENR (use this as bootnode for other nodes): {}", local_enr.to_base64());
-            
-            let mut interval = tokio::time::interval(Duration::from_secs(
-                discovery_config.query_interval_secs,
-            ));
-            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            (Some(service), Some(event_rx), Some(interval))
+
+            (Some(Arc::new(service)), Some(event_rx))
         } else {
-            (None, None, None)
+            (None, None)
         };
 
         let peer_manager = PeerManager::new(
@@ -188,7 +181,6 @@ impl Network {
             pending_outbound_requests: HashMap::new(),
             discovery,
             discovery_events,
-            discovery_interval,
             discovery_advertised_ip,
             connection_id_by_peer_id: HashMap::new(),
         })
@@ -209,16 +201,6 @@ impl Network {
             };
             tokio::pin!(discovery_future);
 
-            let interval_future = if let Some(mut interval) = self.discovery_interval.take() {
-                Either::Left(async move {
-                    interval.tick().await;
-                    Some(interval)
-                })
-            } else {
-                Either::Right(async { None })
-            };
-            tokio::pin!(interval_future);
-
             select! {
                 event = &mut swarm_future => {
                     match event {
@@ -233,23 +215,23 @@ impl Network {
                         }
                         SwarmEvent::NewListenAddr { address, .. } => {
                             if let Some(discovery) = &self.discovery {
-                            if let Some((socket, is_tcp)) =
-                                discovery::multiaddr_to_socket(&address)
-                            {
-                                if is_tcp {
-                                    // Avoid overwriting the discv5 UDP port with libp2p QUIC.
-                                    let socket = if let Some(advertised_ip) =
-                                        self.discovery_advertised_ip
-                                    {
-                                        SocketAddr::new(advertised_ip, socket.port())
-                                    } else {
-                                        socket
-                                    };
-                                    if !socket.ip().is_unspecified() {
-                                        discovery.update_socket(socket, true);
+                                if let Some((socket, is_tcp)) =
+                                    discovery::multiaddr_to_socket(&address)
+                                {
+                                    if is_tcp {
+                                        // Avoid overwriting the discv5 UDP port with libp2p QUIC.
+                                        let socket = if let Some(advertised_ip) =
+                                            self.discovery_advertised_ip
+                                        {
+                                            SocketAddr::new(advertised_ip, socket.port())
+                                        } else {
+                                            socket
+                                        };
+                                        if !socket.ip().is_unspecified() {
+                                            discovery.update_socket(socket, true);
+                                        }
                                     }
                                 }
-                            }
                             }
                             info!("Local node is listening on {address}");
                         }
@@ -276,6 +258,9 @@ impl Network {
                                 if connections.is_empty() {
                                     self.connection_id_by_peer_id.remove(&peer_id);
                                     self.peer_manager.disconnected_peer(&peer_id).await;
+                                    if self.peer_manager.needs_more_peers().await {
+                                        self.spawn_discovery_lookup();
+                                    }
                                 }
                             }
                         }
@@ -292,19 +277,6 @@ impl Network {
                     if let Some(event) = event {
                         if let Some(network_event) = self.handle_discovery_event(event).await {
                             return Ok(network_event);
-                        }
-                    }
-                }
-                // P2P-TODO: this logic is moved to peer manager, remove this
-                interval = &mut interval_future => {
-                    if let Some(interval) = interval {
-                        self.discovery_interval = Some(interval);
-                    }
-                    if let Some(discovery) = &self.discovery {
-                        if self.swarm.connected_peers().count() < discovery.target_peers() {
-                            if let Err(err) = discovery.random_lookup().await {
-                                warn!("discv5 random lookup failed: {err:?}");
-                            }
                         }
                     }
                 }
@@ -333,12 +305,28 @@ impl Network {
         }
     }
 
+    pub(crate) fn spawn_discovery_lookup(&self) {
+        let Some(discovery) = self.discovery.clone() else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            if let Err(err) = discovery.random_lookup().await {
+                warn!("discv5 random lookup failed: {err:?}");
+            }
+        });
+    }
+
     async fn handle_discovered_enr(
         &mut self,
         enr: discv5::enr::Enr<CombinedKey>,
     ) -> Option<NetworkEvent> {
         let peer_id = enr_peer_id(&enr)?;
-        if self.peer_manager.should_dial_peer(peer_id).await {
+        let should_dial = self.peer_manager.should_dial_peer(peer_id).await;
+        if !should_dial {
+            if self.peer_manager.needs_more_peers().await {
+                self.spawn_discovery_lookup();
+            }
             return None;
         }
 
@@ -361,9 +349,15 @@ impl Network {
             );
         }
         for addr in addresses {
-            if let Err(err) = self.swarm.dial(addr.clone()) {
-                warn!("Failed to dial peer {peer_id} via {addr}: {err:?}");
+            match self.swarm.dial(addr.clone()) {
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Failed to dial peer {peer_id} via {addr}: {err:?}");
+                }
             }
+        }
+        if self.peer_manager.needs_more_peers().await {
+            self.spawn_discovery_lookup();
         }
         None
     }

@@ -50,6 +50,7 @@ write_rollup_config_from_template() {
     {
         echo ""
         echo "[network]"
+        echo "target_peers = 2"
         echo ""
         echo "[network.discovery]"
         echo "enabled = true"
@@ -58,8 +59,6 @@ write_rollup_config_from_template() {
         echo "enr_tcp_port = $discovery_tcp_port"
         echo "private_key_path = \"$discovery_key_path\""
         echo "$bootnodes_line"
-        echo "target_peers = 2"
-        echo "query_interval_secs = 5"
     } >> "$config_path"
 }
 

@@ -205,8 +205,7 @@ write_rollup_config_from_template() {
   local discovery_key_path=${11}
   local bootnodes=${12:-}
   local target_peers=${13:-32}
-  local query_interval=${14:-30}
-  local dial_addr=${15:-}
+  local dial_addr=${14:-}
 
   cp "$template_path" "$config_path"
 
@@ -224,6 +223,7 @@ write_rollup_config_from_template() {
   {
     echo ""
     echo "[network]"
+    echo "target_peers = $target_peers"
     if [[ -n "$dial_addr" ]]; then
       echo "dial_addr = \"$dial_addr\""
     fi
@@ -235,8 +235,6 @@ write_rollup_config_from_template() {
     echo "enr_tcp_port = $discovery_tcp_port"
     echo "private_key_path = \"$discovery_key_path\""
     echo "$bootnodes_line"
-    echo "target_peers = $target_peers"
-    echo "query_interval_secs = $query_interval"
   } >> "$config_path"
 }
 
@@ -271,6 +269,7 @@ enable_subscriptions = true
 max_subscriptions_per_connection = 100
 
 [network]
+target_peers = 32
 
 [network.discovery]
 enabled = true
@@ -279,8 +278,6 @@ enr_address = "$public_ip"
 enr_tcp_port = $p2p_tcp_port
 private_key_path = "$data_dir/discv5.key"
 bootnodes = []
-target_peers = 32
-query_interval_secs = 30
 EOF
 }
 
@@ -323,6 +320,7 @@ scan_l1_start_height = 1
 
 [network]
 dial_addr = "$dial_addr"
+target_peers = 32
 
 [network.discovery]
 enabled = true
@@ -331,8 +329,6 @@ enr_address = "$public_ip"
 enr_tcp_port = $p2p_tcp_port
 private_key_path = "$data_dir/discv5.key"
 bootnodes = ["$bootnode_enr"]
-target_peers = 32
-query_interval_secs = 30
 EOF
 }
 
@@ -362,7 +358,7 @@ run_node1() {
 
   local config_path="$data_dir/rollup_config.toml"
   local da_db_path="$DA_DB_PATH"
-  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "0.0.0.0" "$sequencer_rpc_port" "http://$public_ip:$sequencer_rpc_port" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "" 32 30 ""
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "0.0.0.0" "$sequencer_rpc_port" "http://$public_ip:$sequencer_rpc_port" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "" 32 ""
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -371,8 +367,7 @@ run_node1() {
   export NETWORK_DISCOVERY_ENR_TCP_PORT="$p2p_tcp_port"
   export NETWORK_DISCOVERY_KEY_PATH="$data_dir/discv5.key"
   export NETWORK_DISCOVERY_BOOTNODES=""
-  export NETWORK_DISCOVERY_TARGET_PEERS=32
-  export NETWORK_DISCOVERY_QUERY_INTERVAL_SECS=30
+  export NETWORK_TARGET_PEERS=32
 
   log "Node1 public IPv4: $public_ip"
   log "Sequencer RPC URL: http://$public_ip:$sequencer_rpc_port"
@@ -436,7 +431,7 @@ run_node2() {
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   local da_db_path="$DA_DB_PATH"
-  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 30 "$dial_addr"
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 "$dial_addr"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -445,8 +440,7 @@ run_node2() {
   export NETWORK_DISCOVERY_ENR_TCP_PORT="$p2p_tcp_port"
   export NETWORK_DISCOVERY_KEY_PATH="$data_dir/discv5.key"
   export NETWORK_DISCOVERY_BOOTNODES="$bootnode_enr"
-  export NETWORK_DISCOVERY_TARGET_PEERS=32
-  export NETWORK_DISCOVERY_QUERY_INTERVAL_SECS=30
+  export NETWORK_TARGET_PEERS=32
   export NETWORK_DIAL_ADDR="$dial_addr"
 
   log "Node2 public IPv4: $public_ip"
@@ -511,7 +505,7 @@ run_node3() {
   local config_path="$data_dir/rollup_config.toml"
   local dial_addr="${NETWORK_DIAL_ADDR:-/ip4/127.0.0.1/tcp/9100}"
   local da_db_path="$DA_DB_PATH"
-  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 30 "$dial_addr"
+  write_rollup_config_from_template "$config_path" "$ROLLUP_CONFIG_TEMPLATE" "$da_db_path" "$data_dir/db" "127.0.0.1" "$rpc_port" "$sequencer_url" "$discovery_udp_port" "$public_ip" "$p2p_tcp_port" "$data_dir/discv5.key" "\"$bootnode_enr\"" 32 "$dial_addr"
 
   export NETWORK_DISCOVERY_ENABLED=true
   export NETWORK_DISCOVERY_BIND_ADDR="0.0.0.0:$discovery_udp_port"
@@ -520,8 +514,7 @@ run_node3() {
   export NETWORK_DISCOVERY_ENR_TCP_PORT="$p2p_tcp_port"
   export NETWORK_DISCOVERY_KEY_PATH="$data_dir/discv5.key"
   export NETWORK_DISCOVERY_BOOTNODES="$bootnode_enr"
-  export NETWORK_DISCOVERY_TARGET_PEERS=32
-  export NETWORK_DISCOVERY_QUERY_INTERVAL_SECS=30
+  export NETWORK_TARGET_PEERS=32
   export NETWORK_DIAL_ADDR="$dial_addr"
 
   log "Node3 public IPv4: $public_ip"

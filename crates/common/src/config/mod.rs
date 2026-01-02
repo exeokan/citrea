@@ -456,14 +456,6 @@ fn default_discovery_bind_address() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], 9000))
 }
 
-fn default_discovery_target_peers() -> usize {
-    32
-}
-
-fn default_discovery_query_interval_secs() -> u64 {
-    30
-}
-
 const LIGHTHOUSE_BOOTNODES: [&str; 4] = [
     "enr:-Iu4QLm7bZGdAt9NSeJG0cEnJohWcQTQaI9wFLu3Q7eHIDfrI4cwtzvEW3F3VbG9XdFXlrHyFGeXPn9snTCQJ9bnMRABgmlkgnY0gmlwhAOTJQCJc2VjcDI1NmsxoQIZdZD6tDYpkpEfVo5bgiU8MGRjhcOmHGD2nErK0UKRrIN0Y3CCIyiDdWRwgiMo",
     "enr:-Ku4QImhMc1z8yCiNJ1TyUxdcfNucje3BGwEHzodEZUan8PherEo4sF7pPHPSIB1NNuSg5fZy7qFsjmUKs2ea1Whi0EBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQOVphkDqal4QzPMksc5wnpuC3gvSC8AfbFOnZY_On34wIN1ZHCCIyg",
@@ -491,10 +483,6 @@ pub struct DiscoveryConfig {
     pub private_key_path: Option<PathBuf>,
     #[serde(default = "default_discovery_bootnodes")]
     pub bootnodes: Vec<String>,
-    #[serde(default = "default_discovery_target_peers")]
-    pub target_peers: usize,
-    #[serde(default = "default_discovery_query_interval_secs")]
-    pub query_interval_secs: u64,
 }
 
 impl Default for DiscoveryConfig {
@@ -507,8 +495,6 @@ impl Default for DiscoveryConfig {
             enr_tcp_port: None,
             private_key_path: None,
             bootnodes: default_discovery_bootnodes(),
-            target_peers: default_discovery_target_peers(),
-            query_interval_secs: default_discovery_query_interval_secs(),
         }
     }
 }
@@ -573,16 +559,6 @@ impl FromEnv for DiscoveryConfig {
             })
             .unwrap_or_else(default_discovery_bootnodes);
 
-        let target_peers = read_env("NETWORK_DISCOVERY_TARGET_PEERS")
-            .ok()
-            .and_then(|val| val.parse().ok())
-            .unwrap_or_else(default_discovery_target_peers);
-
-        let query_interval_secs = read_env("NETWORK_DISCOVERY_QUERY_INTERVAL_SECS")
-            .ok()
-            .and_then(|val| val.parse().ok())
-            .unwrap_or_else(default_discovery_query_interval_secs);
-
         Ok(Self {
             enabled,
             udp_bind,
@@ -591,8 +567,6 @@ impl FromEnv for DiscoveryConfig {
             enr_tcp_port,
             private_key_path,
             bootnodes,
-            target_peers,
-            query_interval_secs,
         })
     }
 }
@@ -752,8 +726,6 @@ mod tests {
             "NETWORK_DISCOVERY_BOOTNODES",
             "enr:-IS4QJx1,enr:-Kj4abcd  ,",
         );
-        std::env::set_var("NETWORK_DISCOVERY_TARGET_PEERS", "5");
-        std::env::set_var("NETWORK_DISCOVERY_QUERY_INTERVAL_SECS", "45");
 
         let config = DiscoveryConfig::from_env().unwrap();
         assert!(!config.enabled);
@@ -769,8 +741,6 @@ mod tests {
             config.bootnodes,
             vec!["enr:-IS4QJx1".to_string(), "enr:-Kj4abcd".to_string()]
         );
-        assert_eq!(config.target_peers, 5);
-        assert_eq!(config.query_interval_secs, 45);
 
         std::env::remove_var("NETWORK_DISCOVERY_ENABLED");
         std::env::remove_var("NETWORK_DISCOVERY_BIND_ADDR");
@@ -779,8 +749,6 @@ mod tests {
         std::env::remove_var("NETWORK_DISCOVERY_ENR_TCP_PORT");
         std::env::remove_var("NETWORK_DISCOVERY_KEY_PATH");
         std::env::remove_var("NETWORK_DISCOVERY_BOOTNODES");
-        std::env::remove_var("NETWORK_DISCOVERY_TARGET_PEERS");
-        std::env::remove_var("NETWORK_DISCOVERY_QUERY_INTERVAL_SECS");
     }
 
     #[test]
