@@ -386,6 +386,12 @@ def parse_args() -> argparse.Namespace:
         default=12346,
         help="Base RPC port for nodes >=2 (increments by 1 per node).",
     )
+    parser.add_argument(
+        "--target-peers",
+        type=int,
+        default=None,
+        help="Target peer count for nodes (passed as TARGET_PEER_COUNT environment variable).",
+    )
     return parser.parse_args()
 
 
@@ -400,6 +406,8 @@ def build_base_env(args: argparse.Namespace, sequencer_runtime: NodeRuntime) -> 
     env["NODE1_SEQUENCER_RPC_PORT"] = str(sequencer_runtime.rpc_port)
     env["NODE1_DATA_DIR"] = str(sequencer_runtime.data_dir.resolve())
     env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{sequencer_runtime.p2p_port}"
+    if args.target_peers is not None:
+        env["TARGET_PEER_COUNT"] = str(args.target_peers)
     return env
 
 
