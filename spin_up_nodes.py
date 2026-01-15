@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import atexit
+import json
 import os
+import random
 import re
 import signal
-import sys
-import atexit
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 ENR_REGEX = re.compile(r"(enr:[^\s]+)")
 CONNECTIVITY_MARKERS = [
@@ -16,17 +19,295 @@ CONNECTIVITY_MARKERS = [
     "Connection established with peer",
     "discv5 inserted node",
 ]
+SUPPORTED_TOPOLOGIES = ("star", "line", "ring", "mesh", "random")
+SUPPORTED_NODE_TYPES = ("sequencer", "full_node")
 
 # Track Process Group IDs (PGIDs) instead of just PIDs
 ACTIVE_PGIDS: List[int] = []
 ACTIVE_STATE_DIR: Optional[Path] = None
 
 
+@dataclass
+class NodeSpec:
+    name: str
+    node_type: str
+    bootnodes: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "type": self.node_type, "bootnodes": self.bootnodes}
+
+
+@dataclass
+class NodeRuntime:
+    spec: NodeSpec
+    discovery_port: int
+    p2p_port: int
+    rpc_port: int
+    data_dir: Path
+
+
+@dataclass
+class NodeHandle:
+    name: str
+    process: asyncio.subprocess.Process
+    stream_task: asyncio.Task
+    watch_task: asyncio.Task
+    log_path: Path
+
+
+def _dedupe_preserve(items: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def generate_topology_config(
+    topology: str,
+    node_count: int,
+    degree: int = 2,
+    seed: Optional[int] = None,
+) -> List[NodeSpec]:
+    if node_count < 1:
+        raise ValueError("Node count must be at least 1")
+
+    normalized = topology.lower()
+    if normalized not in SUPPORTED_TOPOLOGIES:
+        raise ValueError(f"Unsupported topology '{topology}'. Expected one of {SUPPORTED_TOPOLOGIES}.")
+
+    rng = random.Random(seed)
+    specs: List[NodeSpec] = [NodeSpec("node1", "sequencer", [])]
+    if node_count == 1:
+        return specs
+
+    for idx in range(2, node_count + 1):
+        name = f"node{idx}"
+        bootnodes: List[str] = []
+
+        if normalized == "star":
+            bootnodes = ["node1"]
+        elif normalized == "line":
+            bootnodes = [f"node{idx - 1}"]
+        elif normalized == "ring":
+            bootnodes = [f"node{idx - 1}"]
+            if idx == node_count and node_count > 2:
+                bootnodes.append("node1")
+        elif normalized == "mesh":
+            bootnodes = [spec.name for spec in specs]
+        elif normalized == "random":
+            candidates = [spec.name for spec in specs]
+            degree_clamped = max(1, degree)
+            sample_size = min(len(candidates), degree_clamped)
+            bootnodes = rng.sample(candidates, sample_size) if candidates else []
+
+        specs.append(NodeSpec(name, "full_node", _dedupe_preserve(bootnodes)))
+
+    return specs
+
+
+def write_topology_config(specs: Sequence[NodeSpec], path: Path) -> Path:
+    path = path.expanduser().resolve()
+    payload = [spec.to_dict() for spec in specs]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+def _validate_node_spec_types(entry: Dict[str, Any]) -> NodeSpec:
+    try:
+        name = entry["name"]
+        node_type = entry["type"]
+    except KeyError as missing:
+        raise ValueError(f"Missing required key: {missing}") from None
+
+    bootnodes_raw = entry.get("bootnodes", [])
+    if not isinstance(name, str) or not name:
+        raise ValueError("Node 'name' must be a non-empty string.")
+    if not isinstance(node_type, str):
+        raise ValueError("Node 'type' must be a string.")
+    if not isinstance(bootnodes_raw, list) or any(not isinstance(b, str) for b in bootnodes_raw):
+        raise ValueError("Node 'bootnodes' must be a list of strings.")
+
+    return NodeSpec(name=name, node_type=node_type, bootnodes=list(bootnodes_raw))
+
+
+def load_topology_config(path: Path) -> List[NodeSpec]:
+    path = path.expanduser().resolve()
+    if not path.exists():
+        raise SystemExit(f"Topology config not found: {path}")
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Failed to parse topology JSON: {exc}") from exc
+
+    if not isinstance(data, list):
+        raise SystemExit("Topology config must be a JSON array.")
+
+    specs: List[NodeSpec] = []
+    try:
+        for entry in data:
+            if not isinstance(entry, dict):
+                raise ValueError("Each topology entry must be an object.")
+            specs.append(_validate_node_spec_types(entry))
+    except ValueError as exc:
+        raise SystemExit(f"Invalid topology config: {exc}") from exc
+
+    return specs
+
+
+def _ensure_acyclic(specs: Sequence[NodeSpec]) -> None:
+    adjacency = {spec.name: spec.bootnodes for spec in specs}
+    visiting: Set[str] = set()
+    visited: Set[str] = set()
+
+    def dfs(node: str) -> None:
+        if node in visiting:
+            raise ValueError(f"Cycle detected involving '{node}'.")
+        if node in visited:
+            return
+        visiting.add(node)
+        for dependency in adjacency.get(node, []):
+            dfs(dependency)
+        visiting.remove(node)
+        visited.add(node)
+
+    for spec in specs:
+        dfs(spec.name)
+
+
+def validate_topology(specs: Sequence[NodeSpec]) -> None:
+    if not specs:
+        raise ValueError("Topology config cannot be empty.")
+
+    names = [spec.name for spec in specs]
+    if len(set(names)) != len(names):
+        raise ValueError("Node names must be unique.")
+
+    for spec in specs:
+        if spec.node_type not in SUPPORTED_NODE_TYPES:
+            raise ValueError(f"Unsupported node type '{spec.node_type}' for {spec.name}.")
+        for bootnode in spec.bootnodes:
+            if bootnode not in names:
+                raise ValueError(f"Unknown bootnode '{bootnode}' referenced by {spec.name}.")
+            if bootnode == spec.name:
+                raise ValueError(f"Node {spec.name} cannot list itself as a bootnode.")
+
+    sequencers = [spec for spec in specs if spec.node_type == "sequencer"]
+    if len(sequencers) != 1:
+        raise ValueError("Topology must include exactly one sequencer.")
+    if specs[0].node_type != "sequencer":
+        raise ValueError("The first node in the topology must be the sequencer.")
+
+    _ensure_acyclic(specs)
+
+
+def assign_runtime(
+    specs: Sequence[NodeSpec], args: argparse.Namespace, state_dir: Path
+) -> Dict[str, NodeRuntime]:
+    runtime: Dict[str, NodeRuntime] = {}
+    for idx, spec in enumerate(specs, start=1):
+        if idx == 1:
+            discovery_port = args.node1_discovery_port
+            p2p_port = args.node1_p2p_port
+            rpc_port = args.node1_rpc_port
+        else:
+            discovery_port = args.base_discovery_port + idx - 2
+            p2p_port = args.base_p2p_port + idx - 2
+            rpc_port = args.base_rpc_port + idx - 2
+
+        data_dir = (state_dir / spec.name).resolve()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        runtime[spec.name] = NodeRuntime(
+            spec=spec,
+            discovery_port=discovery_port,
+            p2p_port=p2p_port,
+            rpc_port=rpc_port,
+            data_dir=data_dir,
+        )
+    return runtime
+
+
+def build_env_for_node(
+    base_env: Dict[str, str],
+    runtime: NodeRuntime,
+    runtime_map: Dict[str, NodeRuntime],
+    args: argparse.Namespace,
+    bootnode_names: Sequence[str],
+) -> Dict[str, str]:
+    env = base_env.copy()
+    if runtime.spec.node_type == "sequencer":
+        env["NODE1_DISCOVERY_UDP_PORT"] = str(runtime.discovery_port)
+        env["NODE1_P2P_TCP_PORT"] = str(runtime.p2p_port)
+        env["NODE1_SEQUENCER_RPC_PORT"] = str(runtime.rpc_port)
+        env["NODE1_DATA_DIR"] = str(runtime.data_dir)
+        env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{runtime.p2p_port}"
+        return env
+
+    env["NODE2_DISCOVERY_UDP_PORT"] = str(runtime.discovery_port)
+    env["NODE2_P2P_TCP_PORT"] = str(runtime.p2p_port)
+    env["NODE2_RPC_PORT"] = str(runtime.rpc_port)
+    env["NODE2_DATA_DIR"] = str(runtime.data_dir)
+
+    sequencer_runtime = next(
+        (node for node in runtime_map.values() if node.spec.node_type == "sequencer"), None
+    )
+    if sequencer_runtime is None:
+        raise RuntimeError("No sequencer defined in runtime map.")
+
+    dial_target = sequencer_runtime
+    if bootnode_names:
+        dial_target = runtime_map.get(bootnode_names[0], sequencer_runtime)
+
+    env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{dial_target.p2p_port}"
+    return env
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Spin up a local cluster of citrea nodes using run-wan-discovery.sh."
     )
-    parser.add_argument("nodes", type=int, help="Total number of nodes to launch (>=1).")
+    parser.add_argument(
+        "nodes",
+        nargs="?",
+        type=int,
+        help="Total number of nodes to launch (>=1). Required unless --config is provided.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to a topology JSON file. Overrides --nodes/--topology generation.",
+    )
+    parser.add_argument(
+        "--topology",
+        choices=SUPPORTED_TOPOLOGIES,
+        default="star",
+        help="Topology shape to generate when --config is not provided (default: star).",
+    )
+    parser.add_argument(
+        "--degree",
+        type=int,
+        default=2,
+        help="Degree used for --topology random (number of bootnodes sampled per node).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional seed for deterministic random topology generation.",
+    )
+    parser.add_argument(
+        "--write-config",
+        type=str,
+        help="Write the generated topology JSON to this path before launching.",
+    )
+    parser.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Only generate the topology JSON (with --write-config) and exit without starting nodes.",
+    )
     parser.add_argument(
         "--script",
         default="./run-wan-discovery.sh",
@@ -61,7 +342,7 @@ def parse_args() -> argparse.Namespace:
         "--enr-timeout",
         type=int,
         default=60,
-        help="Seconds to wait for the bootnode ENR before aborting (default: 60).",
+        help="Seconds to wait for required bootnode ENRs before aborting a node launch (default: 60).",
     )
     parser.add_argument(
         "--check-interval",
@@ -108,17 +389,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_base_env(args: argparse.Namespace, state_dir: Path) -> Dict[str, str]:
+def build_base_env(args: argparse.Namespace, sequencer_runtime: NodeRuntime) -> Dict[str, str]:
     env = os.environ.copy()
     env["ALLOW_PRIVATE_IPS"] = "true"
     env["PUBLIC_IP"] = args.public_ip
     env["NODE1_PUBLIC_IP"] = args.node1_public_ip or args.public_ip
     env["RUST_LOG"] = args.rust_log
-    env["NODE1_DISCOVERY_UDP_PORT"] = str(args.node1_discovery_port)
-    env["NODE1_P2P_TCP_PORT"] = str(args.node1_p2p_port)
-    env["NODE1_SEQUENCER_RPC_PORT"] = str(args.node1_rpc_port)
-    env["NODE1_DATA_DIR"] = str((state_dir / "node1").resolve())
-    env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{args.node1_p2p_port}"
+    env["NODE1_DISCOVERY_UDP_PORT"] = str(sequencer_runtime.discovery_port)
+    env["NODE1_P2P_TCP_PORT"] = str(sequencer_runtime.p2p_port)
+    env["NODE1_SEQUENCER_RPC_PORT"] = str(sequencer_runtime.rpc_port)
+    env["NODE1_DATA_DIR"] = str(sequencer_runtime.data_dir.resolve())
+    env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{sequencer_runtime.p2p_port}"
     return env
 
 
@@ -135,7 +416,7 @@ async def stream_output(
             if not line:
                 break
             text = line.decode(errors="replace")
-            
+
             # Write to file
             log_file.write(text)
             log_file.flush()
@@ -177,40 +458,79 @@ async def launch_node(
     return process, stream_task
 
 
-async def wait_for_enr(
-    enr_future: asyncio.Future,
-    process: asyncio.subprocess.Process,
-    timeout: int,
-) -> str:
-    proc_wait = asyncio.create_task(process.wait())
-    try:
-        done, pending = await asyncio.wait(
-            {enr_future, proc_wait},
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if enr_future in done:
-            return enr_future.result()
-        if proc_wait in done:
-            code = proc_wait.result()
-            raise RuntimeError(
-                f"Bootnode exited with code {code} before emitting an ENR."
-            )
-        raise RuntimeError(
-            f"Timed out waiting for bootnode ENR after {timeout} seconds."
-        )
-    finally:
-        proc_wait.cancel()
-
-
 async def watch_process(
-    name: str, process: asyncio.subprocess.Process, stop_event: asyncio.Event
+    name: str,
+    process: asyncio.subprocess.Process,
+    stop_event: asyncio.Event,
+    enr_future: Optional[asyncio.Future] = None,
 ) -> None:
     code = await process.wait()
+    if enr_future and not enr_future.done():
+        enr_future.set_exception(RuntimeError(f"{name} exited before emitting an ENR (code {code})."))
     # If the process crashes unexpectedly, stop everything
     if not stop_event.is_set():
         print(f"[{name}] exited unexpectedly with code {code}")
         stop_event.set()
+
+
+async def run_node_task(
+    spec: NodeSpec,
+    runtime: NodeRuntime,
+    script_path: Path,
+    base_env: Dict[str, str],
+    runtime_map: Dict[str, NodeRuntime],
+    args: argparse.Namespace,
+    enr_futures: Dict[str, asyncio.Future],
+    stop_event: asyncio.Event,
+    log_dir: Path,
+) -> NodeHandle:
+    bootnode_enrs: List[str] = []
+    try:
+        if spec.bootnodes:
+            try:
+                bootnode_enrs = await asyncio.wait_for(
+                    asyncio.gather(*(enr_futures[name] for name in spec.bootnodes)),
+                    timeout=args.enr_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"{spec.name} timed out after {args.enr_timeout}s waiting for bootnode ENRs {spec.bootnodes}"
+                ) from exc
+
+        env = build_env_for_node(base_env, runtime, runtime_map, args, spec.bootnodes)
+        log_path = log_dir / f"{spec.name}.log"
+
+        if spec.node_type == "sequencer":
+            node_args = ["node1"]
+        else:
+            if not bootnode_enrs:
+                raise RuntimeError(f"{spec.name} requires at least one bootnode ENR.")
+            bootnode_arg = '","'.join(bootnode_enrs)
+            node_args = ["node2", bootnode_arg]
+
+        process, stream_task = await launch_node(
+            spec.name,
+            script_path,
+            node_args,
+            env,
+            log_path,
+            enr_future=enr_futures[spec.name],
+        )
+        watch_task = asyncio.create_task(
+            watch_process(spec.name, process, stop_event, enr_futures[spec.name])
+        )
+        return NodeHandle(
+            name=spec.name,
+            process=process,
+            stream_task=stream_task,
+            watch_task=watch_task,
+            log_path=log_path,
+        )
+    except Exception as exc:
+        if not enr_futures[spec.name].done():
+            enr_futures[spec.name].set_exception(exc)
+        stop_event.set()
+        raise
 
 
 class ConnectivityWatcher:
@@ -307,9 +627,6 @@ def force_kill_active_pgids() -> None:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    if args.nodes < 1:
-        raise SystemExit("nodes must be >= 1")
-
     script_path = Path(args.script).expanduser().resolve()
     if not script_path.exists():
         raise SystemExit(f"Could not find script at {script_path}")
@@ -321,7 +638,33 @@ async def main_async(args: argparse.Namespace) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    base_env = build_base_env(args, state_dir)
+    if args.generate_only and not args.write_config:
+        raise SystemExit("--generate-only requires --write-config to be set.")
+
+    if args.config:
+        topology = load_topology_config(Path(args.config))
+        topology_label = str(Path(args.config).expanduser().resolve())
+    else:
+        if args.nodes is None or args.nodes < 1:
+            raise SystemExit("Provide a node count >= 1 or a --config file.")
+        topology = generate_topology_config(args.topology, args.nodes, args.degree, args.seed)
+        topology_label = args.topology
+
+    try:
+        validate_topology(topology)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid topology: {exc}") from exc
+
+    if args.write_config:
+        output_path = write_topology_config(topology, Path(args.write_config))
+        print(f"[config] Wrote topology to {output_path}")
+        if args.generate_only:
+            print("[config] Generation-only mode: exiting without starting nodes.")
+            return
+
+    runtime_map = assign_runtime(topology, args, state_dir)
+    sequencer_runtime = runtime_map[topology[0].name]
+    base_env = build_base_env(args, sequencer_runtime)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -336,54 +679,37 @@ async def main_async(args: argparse.Namespace) -> None:
     processes: List[Tuple[str, asyncio.subprocess.Process]] = []
     stream_tasks: List[asyncio.Task] = []
     watch_tasks: List[asyncio.Task] = []
+    node_tasks: List[asyncio.Task] = []
     connectivity_task: Optional[asyncio.Task] = None
     log_paths: List[Path] = []
+    enr_futures: Dict[str, asyncio.Future] = {spec.name: loop.create_future() for spec in topology}
 
     try:
-        print("[setup] Starting node1 (bootnode) and waiting for ENR...")
-        node1_enr_future: asyncio.Future = loop.create_future()
-        node1_env = base_env.copy()
-        node1_log = log_dir / "node1.log"
-        node1_process, node1_stream = await launch_node(
-            "node1",
-            script_path,
-            ["node1"],
-            node1_env,
-            node1_log,
-            enr_future=node1_enr_future,
-        )
-        processes.append(("node1", node1_process))
-        stream_tasks.append(node1_stream)
-        watch_tasks.append(asyncio.create_task(watch_process("node1", node1_process, stop_event)))
-        log_paths.append(node1_log)
-
-        bootnode_enr = await wait_for_enr(node1_enr_future, node1_process, args.enr_timeout)
-        print(f"[setup] Captured bootnode ENR")
-
-        for idx in range(2, args.nodes + 1):
-            node_env = base_env.copy()
-            node_env["NODE2_DISCOVERY_UDP_PORT"] = str(args.base_discovery_port + idx - 2)
-            node_env["NODE2_P2P_TCP_PORT"] = str(args.base_p2p_port + idx - 2)
-            node_env["NODE2_RPC_PORT"] = str(args.base_rpc_port + idx - 2)
-            node_env["NODE2_DATA_DIR"] = str((state_dir / f"node{idx}").resolve())
-            node_env["NETWORK_DIAL_ADDR"] = f"/ip4/{args.public_ip}/tcp/{args.node1_p2p_port}"
-
-            node_name = f"node{idx}"
-            node_log = log_dir / f"{node_name}.log"
-            print(f"[setup] Starting {node_name}...")
-            process, stream_task = await launch_node(
-                node_name,
-                script_path,
-                ["node2", bootnode_enr],
-                node_env,
-                node_log,
+        node_tasks = [
+            asyncio.create_task(
+                run_node_task(
+                    spec,
+                    runtime_map[spec.name],
+                    script_path,
+                    base_env,
+                    runtime_map,
+                    args,
+                    enr_futures,
+                    stop_event,
+                    log_dir,
+                )
             )
-            processes.append((node_name, process))
-            stream_tasks.append(stream_task)
-            watch_tasks.append(asyncio.create_task(watch_process(node_name, process, stop_event)))
-            log_paths.append(node_log)
+            for spec in topology
+        ]
 
-        print(f"[info] All {args.nodes} nodes running. Logs in {log_dir}")
+        handles = await asyncio.gather(*node_tasks)
+        for handle in handles:
+            processes.append((handle.name, handle.process))
+            stream_tasks.append(handle.stream_task)
+            watch_tasks.append(handle.watch_task)
+            log_paths.append(handle.log_path)
+
+        print(f"[info] All {len(handles)} nodes running with topology '{topology_label}'. Logs in {log_dir}")
         print("[info] Press Ctrl+C to stop all nodes.")
 
         connectivity_task = asyncio.create_task(
@@ -398,13 +724,30 @@ async def main_async(args: argparse.Namespace) -> None:
     finally:
         if connectivity_task:
             connectivity_task.cancel()
+            await asyncio.gather(connectivity_task, return_exceptions=True)
+        for task in node_tasks:
+            task.cancel()
+        if node_tasks:
+            await asyncio.gather(*node_tasks, return_exceptions=True)
         await terminate_processes(processes)
         await asyncio.gather(*stream_tasks, return_exceptions=True)
-        # We don't await watch_tasks here because the processes are already killed
+        await asyncio.gather(*watch_tasks, return_exceptions=True)
 
 
 def main() -> None:
     args = parse_args()
+    
+    delete_previous = True
+    if delete_previous:
+        #delete all previous logs and state
+        global ACTIVE_STATE_DIR
+        ACTIVE_STATE_DIR = Path(args.state_dir).expanduser().resolve()
+        if ACTIVE_STATE_DIR.exists():
+            import shutil
+            shutil.rmtree(ACTIVE_STATE_DIR)
+        
+
+
     atexit.register(force_kill_active_pgids)
     try:
         asyncio.run(main_async(args))
