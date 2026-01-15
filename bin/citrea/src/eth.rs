@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use citrea_common::RpcConfig;
+use citrea_network::NetworkGlobals;
 use ethereum_rpc::{EthRpcConfig, FeeHistoryCacheConfig, GasPriceOracleConfig};
 use sov_db::ledger_db::LedgerDB;
 use sov_modules_api::default_context::DefaultContext;
@@ -18,6 +19,7 @@ pub fn register_ethereum<Da: DaService>(
     methods: &mut jsonrpsee::RpcModule<()>,
     sequencer_client_url: Option<String>,
     l2_block_rx: Option<broadcast::Receiver<u64>>,
+    network_globals: Arc<NetworkGlobals>,
 ) -> Result<(), anyhow::Error> {
     let eth_rpc_config = {
         EthRpcConfig {
@@ -34,6 +36,7 @@ pub fn register_ethereum<Da: DaService>(
         ledger_db,
         sequencer_client_url,
         l2_block_rx,
+        network_globals,
     );
     methods
         .merge(ethereum_rpc)

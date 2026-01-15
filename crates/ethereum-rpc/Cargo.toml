@@ -21,6 +21,7 @@ citrea-primitives = { path = "../primitives" }
 citrea-sequencer = { path = "../sequencer" }
 futures = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client", "server"] }
+libp2p = { workspace = true, features = ["serde"] }
 parking_lot = { workspace = true }
 rustc_version_runtime = { workspace = true }
 schnellru = "0.2.1"
@@ -48,6 +49,9 @@ sov-ledger-rpc = { path = "../sovereign-sdk/full-node/sov-ledger-rpc", features 
 sov-modules-api = { path = "../sovereign-sdk/module-system/sov-modules-api", default-features = false }
 sov-rollup-interface = { path = "../sovereign-sdk/rollup-interface", features = ["native"] }
 sov-state = { path = "../sovereign-sdk/module-system/sov-state", default-features = false }
+
+# Citrea deps
+citrea-network = { path = "../network" }
 
 [dev-dependencies]
 tokio = { workspace = true }

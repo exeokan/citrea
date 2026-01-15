@@ -17,6 +17,7 @@ use alloy_rpc_types_trace::geth::{
 };
 use citrea_common::RpcConfig;
 use citrea_evm::{generate_eth_proof, Evm};
+use citrea_network::{NetworkGlobals, PeerStatus};
 use citrea_sequencer::SequencerRpcClient;
 pub use ethereum::{EthRpcConfig, Ethereum};
 pub use gas_price::fee_history::FeeHistoryCacheConfig;
@@ -26,6 +27,7 @@ use jsonrpsee::http_client::HttpClientBuilder;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{PendingSubscriptionSink, RpcModule};
+use libp2p::PeerId;
 use reth_rpc_eth_types::EthApiError;
 use serde_json::{json, Value};
 use sov_db::ledger_db::{LedgerDB, SharedLedgerOps};
@@ -59,6 +61,23 @@ pub struct SyncStatus {
     pub l1_status: LayerStatus,
     pub l2_status: LayerStatus,
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerStatusResponse {
+    pub peer_id: PeerId,
+    pub status: Option<PeerStatus>,
+    pub score: f32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkStatus {
+    pub peer_id: PeerId,
+    pub peers: Vec<PeerStatusResponse>,
+    pub head_l2_block: u64,
+}
+
 
 #[rpc(server)]
 pub trait EthereumRpc {
@@ -188,6 +207,10 @@ pub trait EthereumRpc {
     /// Subscribe to Ethereum events.
     #[subscription(name = "eth_subscribe" => "eth_subscription", unsubscribe = "eth_unsubscribe", item = Value)]
     async fn subscribe_eth(&self, topic: String, filter: Option<Filter>) -> SubscriptionResult;
+
+    /// Gets network status.
+    #[method(name = "citrea_networkStatus")]
+    async fn citrea_network_status(&self) -> RpcResult<NetworkStatus>;
 }
 
 const ETH_RPC_ERROR: &str = "ETH_RPC_ERROR";
@@ -205,6 +228,7 @@ where
     starting_l2_height: U64,
     trace_chain_block_limit: Option<u64>,
     enable_js_tracer: bool,
+    network_globals: Arc<NetworkGlobals>
 }
 
 impl<C, Da> EthereumRpcServerImpl<C, Da>
@@ -217,12 +241,14 @@ where
         starting_l2_height: U64,
         trace_chain_block_limit: Option<u64>,
         enable_js_tracer: bool,
+        network_globals: Arc<NetworkGlobals>,
     ) -> Self {
         Self {
             ethereum,
             starting_l2_height,
             trace_chain_block_limit,
             enable_js_tracer,
+            network_globals,
         }
     }
 }
@@ -680,6 +706,31 @@ where
         }
         Ok(())
     }
+
+    async fn citrea_network_status(&self) -> RpcResult<NetworkStatus> {
+        let peers = self.network_globals.peers.read().await;
+
+        let peer_id = match self.network_globals.peer_id.read().expect("Poisoned lock on network globals peer_id").as_ref() {
+            Some(peer_id) => *peer_id,
+            None => {
+                return Err(to_eth_rpc_error("Local peer ID is not set"));
+            }
+        };
+        let peers = peers.iter().map(|(id, info)| (
+            PeerStatusResponse { peer_id: id.clone(), status: info.status.clone(), score: info.score.score() }
+        )).collect();
+
+        let head_l2_block = match self.ethereum.ledger_db.get_head_l2_block() {
+            Ok(Some((height, _))) => height.0,
+            Ok(None) => 0u64,
+            Err(e) => return Err(to_jsonrpsee_error_object("LEDGER_DB_ERROR", e)),
+        };
+        Ok(NetworkStatus {
+            peer_id,
+            peers,
+            head_l2_block
+        })
+    }
 }
 
 pub fn create_rpc_module<C, Da>(
@@ -690,6 +741,7 @@ pub fn create_rpc_module<C, Da>(
     ledger_db: LedgerDB,
     sequencer_client_url: Option<String>,
     l2_block_rx: Option<broadcast::Receiver<u64>>,
+    network_globals: Arc<NetworkGlobals>,
 ) -> RpcModule<EthereumRpcServerImpl<C, Da>>
 where
     C: sov_modules_api::Context,
@@ -726,6 +778,7 @@ where
         U64::from(head_l2_block),
         rpc_config.trace_chain_block_limit,
         rpc_config.enable_js_tracer,
+        network_globals,
     );
 
     let mut module = EthereumRpcServer::into_rpc(server);

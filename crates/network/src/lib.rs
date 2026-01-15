@@ -31,11 +31,13 @@ pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 #[derive(Default)]
 pub struct NetworkGlobals {
     pub peers: RwLock<HashMap<PeerId, PeerInfo>>,
+    pub peer_id: std::sync::RwLock<Option<PeerId>>,
 }
 impl NetworkGlobals {
     pub fn new() -> Self {
         Self {
             peers: RwLock::new(HashMap::new()),
+            peer_id: std::sync::RwLock::new(None),
         }
     }
 }
@@ -94,7 +96,14 @@ impl Network {
                 })
             })?
             .build();
-
+            
+        let local_peer_id = *swarm.local_peer_id();
+        {
+            let mut lock = network_globals.peer_id
+                .write()
+                .expect("Poisoned lock on network globals peer_id");
+            *lock = Some(local_peer_id);
+        }
         let topic = gossipsub::IdentTopic::new("new-head");
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 

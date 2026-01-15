@@ -205,6 +205,7 @@ pub fn build_services<DA, Vm>(
     code_commitments: HashMap<SpecId, <Vm as Zkvm>::CodeCommitment>,
     rpc_module: RpcModule<()>,
     backup_manager: Arc<BackupManager>,
+    network_globals: Arc<NetworkGlobals>,
 ) -> Result<(
     L2Syncer<DA, LedgerDB>,
     L1BlockHandler<Vm, DA, LedgerDB>,
@@ -236,7 +237,6 @@ where
     let (network_request_tx, network_request_rx) = mpsc::channel(100);
     let (l2_syncer_tx, l2_syncer_rx) = mpsc::channel(100);
 
-    let network_globals = Arc::new(NetworkGlobals::new());
     let l2_syncer = L2Syncer::new(
         runner_config,
         init_params,

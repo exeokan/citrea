@@ -39,7 +39,7 @@ use anyhow::Result;
 use citrea_common::backup::BackupManager;
 pub use citrea_common::SequencerConfig;
 use citrea_common::{InitParams, NetworkConfig, RollupPublicKeys};
-use citrea_network::NetworkService;
+use citrea_network::{NetworkGlobals, NetworkService};
 use citrea_stf::runtime::{CitreaRuntime, DefaultContext};
 use db_provider::DbProvider;
 use deposit_data_mempool::DepositDataMempool;
@@ -121,6 +121,7 @@ pub fn build_services<Da>(
     rpc_module: RpcModule<()>,
     backup_manager: Arc<BackupManager>,
     task_executor: TaskExecutor,
+    network_globals: Arc<NetworkGlobals>,
 ) -> Result<(CitreaSequencer<Da>, RpcModule<()>, NetworkService)>
 where
     Da: DaService,
@@ -171,7 +172,6 @@ where
     let rpc_module = rpc::register_rpc_methods(rpc_context, rpc_module)?;
 
     let (network_tx, network_rx) = mpsc::channel(100);
-    let network_globals = Arc::new(citrea_network::NetworkGlobals::new());
     let network = NetworkService::build(
         network_config,
         network_globals,
