@@ -553,16 +553,19 @@ class ConnectivityWatcher:
         return count
 
 
-async def monitor_connectivity(
-    log_paths: List[Path], interval: int, stop_event: asyncio.Event
+async def update_rpc_ports_file(
+    runtime_map: Dict[str, NodeRuntime], state_dir: Path, stop_event: asyncio.Event
 ) -> None:
-    watcher = ConnectivityWatcher(CONNECTIVITY_MARKERS)
+    """Periodically update the nodes.txt file with active RPC ports."""
     while not stop_event.is_set():
-        await asyncio.sleep(interval)
-        for path in log_paths:
-            matches = watcher.scan(path)
-            if matches:
-                print(f"[connectivity] {path.name}: {matches} new peer events")
+        try:
+            ports_file = state_dir / "nodes.txt"
+            lines = [f"localhost:{runtime.rpc_port}" for runtime in sorted(runtime_map.values(), key=lambda r: r.rpc_port)]
+            ports_file.write_text("\n".join(lines) + "\n")
+            await asyncio.sleep(5)  # Update every 5 seconds
+        except Exception as e:
+            print(f"[error] Failed to update nodes.txt: {e}")
+            await asyncio.sleep(5)
 
 
 def kill_pgid(pgid: int, sig: signal.Signals) -> None:
@@ -627,10 +630,10 @@ def force_kill_active_pgids() -> None:
 
 
 def write_rpc_ports(runtime_map: Dict[str, NodeRuntime], state_dir: Path) -> Path:
-    """Write RPC ports mapping to a JSON file for external access."""
-    ports_file = state_dir / "rpc_ports.json"
-    ports_data = {name: runtime.rpc_port for name, runtime in runtime_map.items()}
-    ports_file.write_text(json.dumps(ports_data, indent=2))
+    """Write RPC ports to nodes.txt file in localhost:port format."""
+    ports_file = state_dir / "nodes.txt"
+    lines = [f"localhost:{runtime.rpc_port}" for runtime in sorted(runtime_map.values(), key=lambda r: r.rpc_port)]
+    ports_file.write_text("\n".join(lines) + "\n")
     return ports_file
 
 
@@ -674,13 +677,6 @@ async def main_async(args: argparse.Namespace) -> None:
     sequencer_runtime = runtime_map[topology[0].name]
     base_env = build_base_env(args, sequencer_runtime)
 
-    # Write RPC ports to file and print them
-    ports_file = write_rpc_ports(runtime_map, state_dir)
-    print(f"[config] RPC ports written to {ports_file}")
-    print("[config] RPC Port Mapping:")
-    for name, runtime in sorted(runtime_map.items()):
-        print(f"  {name}: {runtime.rpc_port}")
-
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -696,6 +692,7 @@ async def main_async(args: argparse.Namespace) -> None:
     watch_tasks: List[asyncio.Task] = []
     node_tasks: List[asyncio.Task] = []
     connectivity_task: Optional[asyncio.Task] = None
+    ports_update_task: Optional[asyncio.Task] = None
     log_paths: List[Path] = []
     enr_futures: Dict[str, asyncio.Future] = {spec.name: loop.create_future() for spec in topology}
 
@@ -724,11 +721,21 @@ async def main_async(args: argparse.Namespace) -> None:
             watch_tasks.append(handle.watch_task)
             log_paths.append(handle.log_path)
 
+        # Write RPC ports to file and print them after nodes are running
+        ports_file = write_rpc_ports(runtime_map, state_dir)
+        print(f"[config] RPC ports written to {ports_file}")
+        print("[config] RPC Port Mapping:")
+        for runtime in sorted(runtime_map.values(), key=lambda r: r.rpc_port):
+            print(f"  localhost:{runtime.rpc_port}")
+
         print(f"[info] All {len(handles)} nodes running with topology '{topology_label}'. Logs in {log_dir}")
         print("[info] Press Ctrl+C to stop all nodes.")
 
         connectivity_task = asyncio.create_task(
             monitor_connectivity(log_paths, args.check_interval, stop_event)
+        )
+        ports_update_task = asyncio.create_task(
+            update_rpc_ports_file(runtime_map, state_dir, stop_event)
         )
 
         await stop_event.wait()
@@ -740,6 +747,9 @@ async def main_async(args: argparse.Namespace) -> None:
         if connectivity_task:
             connectivity_task.cancel()
             await asyncio.gather(connectivity_task, return_exceptions=True)
+        if ports_update_task:
+            ports_update_task.cancel()
+            await asyncio.gather(ports_update_task, return_exceptions=True)
         for task in node_tasks:
             task.cancel()
         if node_tasks:
