@@ -68,6 +68,7 @@ pub struct PeerStatusResponse {
     pub peer_id: PeerId,
     pub status: Option<PeerStatus>,
     pub score: f32,
+    pub is_connected: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -717,7 +718,7 @@ where
             }
         };
         let peers = peers.iter().map(|(id, info)| (
-            PeerStatusResponse { peer_id: id.clone(), status: info.status.clone(), score: info.score.score() }
+            PeerStatusResponse { peer_id: id.clone(), status: info.status.clone(), score: info.score.score(), is_connected: info.is_connected }
         )).collect();
 
         let head_l2_block = match self.ethereum.ledger_db.get_head_l2_block() {
