@@ -83,12 +83,10 @@ impl Network {
             gossipsub_config,
             target_peers,
             discovery_enabled,
-            tcp_port,
-            udp_port,
-            discovery,
+            discovery: discovery_config,
         } = network_config;
 
-        let (identity_keypair, discovery_key) = prepare_identity(&discovery)?;
+        let (identity_keypair, discovery_key) = prepare_identity(&discovery_config)?;
 
         let mut swarm = SwarmBuilder::with_existing_identity(identity_keypair)
             .with_tokio()
@@ -122,12 +120,11 @@ impl Network {
         let topic = gossipsub::IdentTopic::new("new-head");
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
-        let discovery_config = discovery;
         let discovery_advertised_ip = discovery_config.enr_address;
 
         // Listen on all interfaces
-        let tcp_port = tcp_port.unwrap_or(0);
-        let udp_port = udp_port.unwrap_or(0);
+        let tcp_port = discovery_config.enr_tcp_port.unwrap_or(0);
+        let udp_port = discovery_config.enr_udp_port.unwrap_or(0);
         let udp_addr = format!("/ip4/0.0.0.0/udp/{udp_port}/quic-v1");
         let tcp_addr = format!("/ip4/0.0.0.0/tcp/{tcp_port}");
 
