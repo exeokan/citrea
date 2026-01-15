@@ -75,6 +75,7 @@ pub struct PeerStatusResponse {
 pub struct NetworkStatus {
     pub peer_id: PeerId,
     pub peers: Vec<PeerStatusResponse>,
+    pub head_l2_block: u64,
 }
 
 
@@ -718,9 +719,16 @@ where
         let peers = peers.iter().map(|(id, info)| (
             PeerStatusResponse { peer_id: id.clone(), status: info.status.clone(), score: info.score.score() }
         )).collect();
+
+        let head_l2_block = match self.ethereum.ledger_db.get_head_l2_block() {
+            Ok(Some((height, _))) => height.0,
+            Ok(None) => 0u64,
+            Err(e) => return Err(to_jsonrpsee_error_object("LEDGER_DB_ERROR", e)),
+        };
         Ok(NetworkStatus {
             peer_id,
-            peers
+            peers,
+            head_l2_block
         })
     }
 }
