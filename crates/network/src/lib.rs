@@ -186,100 +186,102 @@ impl Network {
 
     pub async fn next_event(&mut self) -> Result<NetworkEvent> {
         loop {
-            let swarm_future = self.swarm.select_next_some();
-            tokio::pin!(swarm_future);
-
-            let discovery_future = if let Some(mut rx) = self.discovery_events.take() {
-                Either::Left(async move {
-                    let event = rx.recv().await;
-                    (event, Some(rx))
-                })
-            } else {
-                Either::Right(async { (None, None) })
-            };
-            tokio::pin!(discovery_future);
-
-            select! {
-                event = &mut swarm_future => {
-                    match event {
-                        SwarmEvent::Behaviour(event) => {
-                            let network_event = match event {
-                                MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
-                                MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
-                            };
-                            if let Some(event) = network_event {
-                                return Ok(event);
-                            }
+            if let Some(discovery_rx) = self.discovery_events.as_mut() {
+                select! {
+                    swarm_event = self.swarm.select_next_some() => {
+                        if let Some(event) = self.handle_swarm_event(swarm_event).await {
+                            return Ok(event);
                         }
-                        SwarmEvent::NewListenAddr { address, .. } => {
-                            if let Some(discovery) = &self.discovery {
-                                if let Some((socket, is_tcp)) =
-                                    discovery::multiaddr_to_socket(&address)
-                                {
-                                    if is_tcp {
-                                        // Avoid overwriting the discv5 UDP port with libp2p QUIC.
-                                        let socket = if let Some(advertised_ip) =
-                                            self.discovery_advertised_ip
-                                        {
-                                            SocketAddr::new(advertised_ip, socket.port())
-                                        } else {
-                                            socket
-                                        };
-                                        if !socket.ip().is_unspecified() {
-                                            discovery.update_socket(socket, true);
-                                        }
-                                    }
-                                }
-                            }
-                            info!("Local node is listening on {address}");
-                        }
-                        SwarmEvent::ConnectionEstablished {
-                            peer_id,
-                            connection_id,
-                            ..
-                        } => {
-                            info!("Connection established with peer {peer_id} (connection id: {connection_id})");
-                            self.connection_id_by_peer_id
-                                .entry(peer_id)
-                                .or_default()
-                                .push(connection_id);
-                            self.peer_manager.connected_peer(&peer_id).await;
-                        }
-                        SwarmEvent::ConnectionClosed {
-                            peer_id,
-                            connection_id,
-                            ..
-                        } => {
-                            info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
-                            if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
-                                connections.retain(|&id| id != connection_id);
-                                if connections.is_empty() {
-                                    self.connection_id_by_peer_id.remove(&peer_id);
-                                    self.peer_manager.disconnected_peer(&peer_id).await;
-                                    if self.peer_manager.needs_more_peers().await {
-                                        self.spawn_discovery_lookup();
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
                     }
-                
+                    discovery_event = discovery_rx.recv() => {
+                        match discovery_event {
+                            Some(event) => {
+                                if let Some(network_event) = self.handle_discovery_event(event).await {
+                                    return Ok(network_event);
+                                }
+                            }
+                            None => {
+                                // Discovery channel closed; stop polling it to avoid busy loops.
+                                self.discovery_events = None;
+                            }
+                        }
+                    }
                 }
-                (event, receiver) = &mut discovery_future => {
-                    if let Some(rx) = receiver {
-                        if event.is_some() {
-                            self.discovery_events = Some(rx);
+            } else {
+                let swarm_event = self.swarm.select_next_some().await;
+                if let Some(event) = self.handle_swarm_event(swarm_event).await {
+                    return Ok(event);
+                }
+            }
+        }
+    }
+
+    async fn handle_swarm_event(
+        &mut self,
+        event: SwarmEvent<MyBehaviourEvent>,
+    ) -> Option<NetworkEvent> {
+        match event {
+            SwarmEvent::Behaviour(event) => {
+                let network_event = match event {
+                    MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
+                    MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
+                };
+                if let Some(event) = network_event {
+                    return Some(event);
+                }
+            }
+            SwarmEvent::NewListenAddr { address, .. } => {
+                if let Some(discovery) = &self.discovery {
+                    if let Some((socket, is_tcp)) = discovery::multiaddr_to_socket(&address) {
+                        if is_tcp {
+                            // Avoid overwriting the discv5 UDP port with libp2p QUIC.
+                            let socket =
+                                if let Some(advertised_ip) = self.discovery_advertised_ip {
+                                    SocketAddr::new(advertised_ip, socket.port())
+                                } else {
+                                    socket
+                                };
+                            if !socket.ip().is_unspecified() {
+                                discovery.update_socket(socket, true);
+                            }
                         }
                     }
-                    if let Some(event) = event {
-                        if let Some(network_event) = self.handle_discovery_event(event).await {
-                            return Ok(network_event);
+                }
+                info!("Local node is listening on {address}");
+            }
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                info!("Connection established with peer {peer_id} (connection id: {connection_id})");
+                self.connection_id_by_peer_id
+                    .entry(peer_id)
+                    .or_default()
+                    .push(connection_id);
+                self.peer_manager.connected_peer(&peer_id).await;
+            }
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
+                if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
+                    connections.retain(|&id| id != connection_id);
+                    if connections.is_empty() {
+                        self.connection_id_by_peer_id.remove(&peer_id);
+                        self.peer_manager.disconnected_peer(&peer_id).await;
+                        if self.peer_manager.needs_more_peers().await {
+                            self.spawn_discovery_lookup();
                         }
                     }
                 }
             }
+            _ => {}
         }
+
+        None
     }
 
     async fn handle_discovery_event(&mut self, event: Discv5Event) -> Option<NetworkEvent> {

@@ -739,9 +739,9 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"[info] All {len(handles)} nodes running with topology '{topology_label}'. Logs in {log_dir}")
         print("[info] Press Ctrl+C to stop all nodes.")
 
-        connectivity_task = asyncio.create_task(
-            monitor_connectivity(log_paths, args.check_interval, stop_event)
-        )
+        # connectivity_task = asyncio.create_task(
+        #     monitor_connectivity(log_paths, args.check_interval, stop_event)
+        # )
         ports_update_task = asyncio.create_task(
             update_rpc_ports_file(runtime_map, state_dir, stop_event)
         )
