@@ -19,6 +19,8 @@ use crate::{Network, NetworkGlobals};
 
 // Peer Manager Heartbeat interval
 pub const PM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const RPC_REQUESTS_CHANNEL_LIMIT: usize = 100;
+const MAX_BLOCKS_BY_RANGE_REQUEST: u64 = 1000;
 
 pub struct NetworkService {
     network: Network,
@@ -51,8 +53,7 @@ impl NetworkService {
     }
 
     pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
-        // P2P-TODO: parameterize channel size
-        let (response_tx, mut response_rx) = mpsc::channel(100);
+        let (response_tx, mut response_rx) = mpsc::channel(RPC_REQUESTS_CHANNEL_LIMIT);
         let mut pm_heartbeat = tokio::time::interval(PM_HEARTBEAT_INTERVAL);
         if self.network.peer_manager.needs_more_peers().await {
             self.network.spawn_discovery_lookup();
@@ -248,8 +249,7 @@ pub fn l2_blocks_by_range(
     }
     let diff = end - start;
 
-    // P2P-TODO: Make this configurable
-    if diff > 1000 {
+    if diff > MAX_BLOCKS_BY_RANGE_REQUEST {
         return Err(anyhow::anyhow!(
             "Requested block range too large. Max range is 1000 blocks"
         ));

@@ -4,7 +4,7 @@
 //! and processing them to maintain the fullnode's state.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
@@ -170,9 +170,8 @@ where
             self.network_request_tx.clone(),
             self.network_globals.clone(),
             self.sync_blocks_count,
-            // P2P-TODO: make these configurable
-            Duration::from_secs(5),
-            Duration::from_secs(1),
+            None,
+            None,
         );
         let handle = tokio::spawn(sync_manager.run());
         loop {

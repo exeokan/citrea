@@ -242,6 +242,7 @@ where
         rollup_config.rpc.clone(),
     )?;
 
+    let network_globals = Arc::new(citrea_network::NetworkGlobals::new());
     if matches!(node_type, NodeWithConfig::LightClientProver(_)) {
         register_healthcheck_rpc_light_client_prover(&mut rpc_module, da_service.clone())
             .expect("Failed to register healthcheck RPC for light client prover");
@@ -256,6 +257,7 @@ where
             &mut rpc_module,
             sequencer_client_url,
             l2_block_rx,
+            network_globals.clone(),
         )?;
     }
 
@@ -275,6 +277,7 @@ where
                     rpc_module,
                     backup_manager,
                     task_executor.clone(),
+                    network_globals,
                 )
                 .expect("Could not start sequencer");
 
@@ -374,6 +377,7 @@ where
                     l2_block_tx,
                     rpc_module,
                     backup_manager,
+                    network_globals
                 )
                 .await
                 .expect("Could not start full-node");

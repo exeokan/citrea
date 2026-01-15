@@ -1,9 +1,6 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 use anyhow::{anyhow, Result};
 use citrea_common::NetworkConfig;
 use discv5::enr::CombinedKey;
@@ -33,6 +30,11 @@ use self::discovery::{
     DiscoveryService,
 };
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
+use crate::config::build_gossipsub_config;
+use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
+
+mod config;
+mod peer_manager;
 mod rpc;
 pub mod service;
 pub mod types;
@@ -40,18 +42,18 @@ pub mod types;
 pub use service::NetworkService;
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 
-use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
 use crate::types::{PeerAction, SCORE_HALFLIFE};
 
-mod peer_manager;
 #[derive(Default)]
 pub struct NetworkGlobals {
     pub peers: RwLock<HashMap<PeerId, PeerInfo>>,
+    pub peer_id: std::sync::RwLock<Option<PeerId>>,
 }
 impl NetworkGlobals {
     pub fn new() -> Self {
         Self {
             peers: RwLock::new(HashMap::new()),
+            peer_id: std::sync::RwLock::new(None),
         }
     }
 }
@@ -71,14 +73,22 @@ struct Network {
     discovery_events: Option<mpsc::Receiver<Discv5Event>>,
     discovery_advertised_ip: Option<IpAddr>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
+    discovery_enabled: bool,
 }
 
 impl Network {
     fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
-        let heartbeat_interval =
-            Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
+        let NetworkConfig {
+            dial_addresses,
+            gossipsub_config,
+            target_peers,
+            discovery_enabled,
+            tcp_port,
+            udp_port,
+            discovery,
+        } = network_config;
 
-        let (identity_keypair, discovery_key) = prepare_identity(&network_config.discovery)?;
+        let (identity_keypair, discovery_key) = prepare_identity(&discovery)?;
 
         let mut swarm = SwarmBuilder::with_existing_identity(identity_keypair)
             .with_tokio()
@@ -90,24 +100,10 @@ impl Network {
             .with_quic()
             .with_behaviour(|key| {
                 // To content-address message, we can take the hash of message and use it as an ID.
-                let message_id_fn = |message: &gossipsub::Message| {
-                    let mut s = DefaultHasher::new();
-                    message.data.hash(&mut s);
-                    gossipsub::MessageId::from(s.finish().to_string())
-                };
-                // Set a custom gossipsub configuration
-                let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(heartbeat_interval) // This is set to aid debugging by not cluttering the log space
-                    .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message
-                    // signing)
-                    .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
-                    .build()
-                    .map_err(tokio::io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
-
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossipsub_config,
+                    build_gossipsub_config(&gossipsub_config)?,
                 )?;
                 Ok(MyBehaviour {
                     gossipsub,
@@ -115,32 +111,36 @@ impl Network {
                 })
             })?
             .build();
-
-        // Create a Gossipsub topic
+            
+        let local_peer_id = *swarm.local_peer_id();
+        {
+            let mut lock = network_globals.peer_id
+                .write()
+                .expect("Poisoned lock on network globals peer_id");
+            *lock = Some(local_peer_id);
+        }
         let topic = gossipsub::IdentTopic::new("new-head");
-        // subscribes to our topic
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
-        let discovery_config = network_config.discovery.clone();
+        let discovery_config = discovery;
         let discovery_advertised_ip = discovery_config.enr_address;
-        let listen_udp_port = discovery_config.enr_udp_port.unwrap_or(0);
-        let listen_tcp_port = discovery_config.enr_tcp_port.unwrap_or(0);
 
-        // Listen on all interfaces and whatever port the OS assigns
-        swarm.listen_on(
-            format!("/ip4/0.0.0.0/udp/{listen_udp_port}/quic-v1").parse()?,
-        )?;
-        swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{listen_tcp_port}").parse()?)?;
+        // Listen on all interfaces
+        let tcp_port = tcp_port.unwrap_or(0);
+        let udp_port = udp_port.unwrap_or(0);
+        let udp_addr = format!("/ip4/0.0.0.0/udp/{udp_port}/quic-v1");
+        let tcp_addr = format!("/ip4/0.0.0.0/tcp/{tcp_port}");
 
-        let dial_addr = network_config.dial_addr;
+        swarm.listen_on(udp_addr.parse()?)?;
+        swarm.listen_on(tcp_addr.parse()?)?;
 
-        // P2P-TODO: implement for multiple addresses
-        // Dial the peer identified by the multi-address given as the second
-        // command-line argument, if any.
-        if let Some(addr) = dial_addr.as_ref() {
-            let remote: Multiaddr = addr.parse()?;
-            swarm.dial(remote)?;
-            info!("Dialed {addr}");
+        for addr in dial_addresses {
+            let multiaddr: Multiaddr = addr.parse()?;
+            if let Err(e) = swarm.dial(multiaddr.clone()) {
+                error!("Failed to dial explicit peer at {multiaddr}: {e}");
+            } else {
+                info!("Dialed explicit peer at {multiaddr}");
+            }
         }
 
 
@@ -171,7 +171,7 @@ impl Network {
 
         let peer_manager = PeerManager::new(
             network_globals.clone(),
-            network_config.target_peers,
+            target_peers,
             SCORE_HALFLIFE,
         );
         Ok(Self {
@@ -183,6 +183,7 @@ impl Network {
             discovery_events,
             discovery_advertised_ip,
             connection_id_by_peer_id: HashMap::new(),
+            discovery_enabled,
         })
     }
 
@@ -321,6 +322,9 @@ impl Network {
         &mut self,
         enr: discv5::enr::Enr<CombinedKey>,
     ) -> Option<NetworkEvent> {
+        if !self.discovery_enabled {
+            return None;
+        }
         let peer_id = enr_peer_id(&enr)?;
         let should_dial = self.peer_manager.should_dial_peer(peer_id).await;
         if !should_dial {
