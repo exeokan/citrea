@@ -1,8 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use citrea_common::NetworkConfig;
@@ -18,13 +15,16 @@ use sov_rollup_interface::rpc::block::L2BlockResponse;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+use crate::config::build_gossipsub_config;
 use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
 use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
+mod config;
 mod peer_manager;
 mod rpc;
 pub mod service;
 pub mod types;
+
 pub use service::NetworkService;
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
 
@@ -53,12 +53,19 @@ struct Network {
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
+    discovery_enabled: bool,
 }
 
 impl Network {
     fn build(network_config: NetworkConfig, network_globals: Arc<NetworkGlobals>) -> Result<Self> {
-        let heartbeat_interval =
-            Duration::from_secs(network_config.gossipsub_config.heartbeat_interval_secs);
+        let NetworkConfig {
+            dial_addresses,
+            gossipsub_config,
+            target_peers,
+            discovery_enabled,
+            tcp_port,
+            udp_port,
+        } = network_config;
 
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -70,24 +77,10 @@ impl Network {
             .with_quic()
             .with_behaviour(|key| {
                 // To content-address message, we can take the hash of message and use it as an ID.
-                let message_id_fn = |message: &gossipsub::Message| {
-                    let mut s = DefaultHasher::new();
-                    message.data.hash(&mut s);
-                    gossipsub::MessageId::from(s.finish().to_string())
-                };
-                // Set a custom gossipsub configuration
-                let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(heartbeat_interval) // This is set to aid debugging by not cluttering the log space
-                    .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message
-                    // signing)
-                    .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
-                    .build()
-                    .map_err(tokio::io::Error::other)?; // Temporary hack because `build` does not return a proper `std::error::Error`.
-
                 // build a gossipsub network behaviour
                 let gossipsub: gossipsub::Behaviour = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossipsub_config,
+                    build_gossipsub_config(&gossipsub_config)?,
                 )?;
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
@@ -102,37 +95,35 @@ impl Network {
             })?
             .build();
 
-        // Create a Gossipsub topic
         let topic = gossipsub::IdentTopic::new("new-head");
-        // subscribes to our topic
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
-        // Listen on all interfaces and whatever port the OS assigns
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        // Listen on all interfaces
+        let tcp_port = tcp_port.unwrap_or(0);
+        let udp_port = udp_port.unwrap_or(0);
+        let udp_addr = format!("/ip4/0.0.0.0/udp/{udp_port}/quic-v1");
+        let tcp_addr = format!("/ip4/0.0.0.0/tcp/{tcp_port}");
 
-        let dial_addr = network_config.dial_addr;
+        swarm.listen_on(udp_addr.parse()?)?;
+        swarm.listen_on(tcp_addr.parse()?)?;
 
-        // P2P-TODO: implement for multiple addresses
-        // Dial the peer identified by the multi-address given as the second
-        // command-line argument, if any.
-        if let Some(addr) = dial_addr.as_ref() {
-            let remote: Multiaddr = addr.parse()?;
-            swarm.dial(remote)?;
-            info!("Dialed {addr}");
+        for addr in dial_addresses {
+            let multiaddr: Multiaddr = addr.parse()?;
+            if let Err(e) = swarm.dial(multiaddr.clone()) {
+                error!("Failed to dial explicit peer at {multiaddr}: {e}");
+            } else {
+                info!("Dialed explicit peer at {multiaddr}");
+            }
         }
 
-        let peer_manager = PeerManager::new(
-            network_globals.clone(),
-            network_config.target_peers,
-            SCORE_HALFLIFE,
-        );
+        let peer_manager = PeerManager::new(network_globals.clone(), target_peers, SCORE_HALFLIFE);
         Ok(Self {
             swarm,
             peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
             connection_id_by_peer_id: HashMap::new(),
+            discovery_enabled,
         })
     }
 
@@ -232,6 +223,9 @@ impl Network {
     async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
         match event {
             mdns::Event::Discovered(list) => {
+                if !self.discovery_enabled {
+                    return None;
+                }
                 tracing::debug!("mDNS discovered {} new peers", list.len());
                 for (peer_id, multiaddr) in list {
                     if !self.peer_manager.should_dial_peer(peer_id).await {
