@@ -626,6 +626,14 @@ def force_kill_active_pgids() -> None:
     ACTIVE_PGIDS.clear()
 
 
+def write_rpc_ports(runtime_map: Dict[str, NodeRuntime], state_dir: Path) -> Path:
+    """Write RPC ports mapping to a JSON file for external access."""
+    ports_file = state_dir / "rpc_ports.json"
+    ports_data = {name: runtime.rpc_port for name, runtime in runtime_map.items()}
+    ports_file.write_text(json.dumps(ports_data, indent=2))
+    return ports_file
+
+
 async def main_async(args: argparse.Namespace) -> None:
     script_path = Path(args.script).expanduser().resolve()
     if not script_path.exists():
@@ -665,6 +673,13 @@ async def main_async(args: argparse.Namespace) -> None:
     runtime_map = assign_runtime(topology, args, state_dir)
     sequencer_runtime = runtime_map[topology[0].name]
     base_env = build_base_env(args, sequencer_runtime)
+
+    # Write RPC ports to file and print them
+    ports_file = write_rpc_ports(runtime_map, state_dir)
+    print(f"[config] RPC ports written to {ports_file}")
+    print("[config] RPC Port Mapping:")
+    for name, runtime in sorted(runtime_map.items()):
+        print(f"  {name}: {runtime.rpc_port}")
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
