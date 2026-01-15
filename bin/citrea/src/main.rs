@@ -238,6 +238,7 @@ where
         rollup_config.rpc.clone(),
     )?;
 
+    let network_globals = Arc::new(citrea_network::NetworkGlobals::new());
     if matches!(node_type, NodeWithConfig::LightClientProver(_)) {
         register_healthcheck_rpc_light_client_prover(&mut rpc_module, da_service.clone())
             .expect("Failed to register healthcheck RPC for light client prover");
@@ -252,6 +253,7 @@ where
             &mut rpc_module,
             sequencer_client_url,
             l2_block_rx,
+            network_globals.clone(),
         )?;
     }
 
@@ -259,7 +261,7 @@ where
 
     match node_type {
         NodeWithConfig::Sequencer(sequencer_config) => {
-            let (mut sequencer, rpc_module) = rollup_blueprint
+            let (mut sequencer, rpc_module, network_service) = rollup_blueprint
                 .create_sequencer(
                     genesis_config,
                     rollup_config.clone(),
@@ -271,6 +273,7 @@ where
                     rpc_module,
                     backup_manager,
                     task_executor.clone(),
+                    network_globals,
                 )
                 .expect("Could not start sequencer");
 
@@ -282,6 +285,13 @@ where
                     if let Err(e) = sequencer.run(shutdown_signal).await {
                         error!("Error: {}", e);
                     }
+                },
+            );
+
+            task_executor.spawn_critical_with_graceful_shutdown_signal(
+                "NetworkService",
+                |shutdown_signal| async move {
+                    network_service.run(shutdown_signal).await;
                 },
             );
         }
@@ -351,7 +361,7 @@ where
             );
         }
         _ => {
-            let (mut l2_syncer, l1_block_handler, pruner_service, rpc_module) =
+            let (mut l2_syncer, l1_block_handler, pruner_service, rpc_module, network_service) =
                 CitreaRollupBlueprint::create_full_node(
                     &rollup_blueprint,
                     network,
@@ -363,6 +373,7 @@ where
                     l2_block_tx,
                     rpc_module,
                     backup_manager,
+                    network_globals
                 )
                 .await
                 .expect("Could not start full-node");
@@ -400,6 +411,11 @@ where
             task_executor.spawn_critical_with_graceful_shutdown_signal(
                 "FullNodeL2Syncer",
                 |shutdown_signal| async move { l2_syncer.run(shutdown_signal).await },
+            );
+
+            task_executor.spawn_critical_with_graceful_shutdown_signal(
+                "NetworkService",
+                |shutdown_signal| async move { network_service.run(shutdown_signal).await },
             );
         }
     }

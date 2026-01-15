@@ -6,9 +6,11 @@ use citrea_primitives::PRE_TANGERINE_BRIDGE_INITIALIZE_PARAMS;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+pub use crate::config::network::{GossipsubConfig, NetworkConfig};
 pub use crate::config::rpc::RpcConfig;
 use crate::utils::read_env;
 
+mod network;
 mod rpc;
 
 pub trait FromEnv: Sized {
@@ -136,6 +138,9 @@ pub struct FullNodeConfig<BitcoinServiceConfig> {
     /// Telemetry configuration
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Network configuration
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 impl<DaC: FromEnv> FromEnv for FullNodeConfig<DaC> {
@@ -147,6 +152,7 @@ impl<DaC: FromEnv> FromEnv for FullNodeConfig<DaC> {
             da: DaC::from_env()?,
             public_keys: RollupPublicKeys::from_env()?,
             telemetry: TelemetryConfig::from_env()?,
+            network: NetworkConfig::from_env()?,
         })
     }
 }
@@ -583,6 +589,7 @@ mod tests {
                 bind_host: Some("0.0.0.0".to_owned()),
                 bind_port: Some(8001),
             },
+            network: NetworkConfig::default(),
         };
         assert_eq!(config, expected);
     }
@@ -802,6 +809,7 @@ mod tests {
                 bind_host: Some("0.0.0.0".to_owned()),
                 bind_port: Some(8082),
             },
+            network: NetworkConfig::default(),
         };
         assert_eq!(full_node_config, expected);
     }

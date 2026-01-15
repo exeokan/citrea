@@ -123,13 +123,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use citrea_common::backup::BackupManager;
 use citrea_common::cache::L1BlockCache;
-use citrea_common::{InitParams, RollupPublicKeys, RunnerConfig};
+use citrea_common::{InitParams, NetworkConfig, RollupPublicKeys, RunnerConfig};
+use citrea_network::{NetworkGlobals, NetworkService};
 use citrea_stf::runtime::CitreaRuntime;
 use citrea_storage_ops::pruning::{Pruner, PrunerService};
 use da_block_handler::L1BlockHandler;
 use jsonrpsee::RpcModule;
 pub use l2_syncer::L2Syncer;
-use sov_db::ledger_db::NodeLedgerOps;
+use sov_db::ledger_db::{LedgerDB, SharedLedgerOps};
 use sov_modules_api::default_context::DefaultContext;
 use sov_modules_api::fork::ForkManager;
 use sov_modules_api::{SpecId, Zkvm};
@@ -138,7 +139,7 @@ use sov_prover_storage_manager::ProverStorageManager;
 use sov_rollup_interface::services::da::DaService;
 use sov_rollup_interface::zk::ZkvmHost;
 use sov_rollup_interface::Network;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 /// Module for handling L1 data availability blocks
 pub mod da_block_handler;
@@ -152,6 +153,9 @@ mod l2_syncer;
 mod metrics;
 /// Module providing RPC functionality
 pub mod rpc;
+
+/// Sync Manager module
+mod sync_manager;
 
 /// Builds and initializes all fullnode services
 ///
@@ -182,9 +186,10 @@ pub mod rpc;
 /// - Optional PrunerService for historical data pruning
 /// - Configured RPC module
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub fn build_services<DA, DB, Vm>(
+pub fn build_services<DA, Vm>(
     network: Network,
     runner_config: RunnerConfig,
+    network_config: NetworkConfig,
     init_params: InitParams,
     native_stf: StfBlueprint<
         DefaultContext,
@@ -193,22 +198,23 @@ pub fn build_services<DA, DB, Vm>(
     >,
     public_keys: RollupPublicKeys,
     da_service: Arc<DA>,
-    ledger_db: DB,
+    ledger_db: LedgerDB,
     storage_manager: ProverStorageManager,
     l2_block_tx: broadcast::Sender<u64>,
     fork_manager: ForkManager<'static>,
     code_commitments: HashMap<SpecId, <Vm as Zkvm>::CodeCommitment>,
     rpc_module: RpcModule<()>,
     backup_manager: Arc<BackupManager>,
+    network_globals: Arc<NetworkGlobals>,
 ) -> Result<(
-    L2Syncer<DA, DB>,
-    L1BlockHandler<Vm, DA, DB>,
+    L2Syncer<DA, LedgerDB>,
+    L1BlockHandler<Vm, DA, LedgerDB>,
     Option<PrunerService>,
     RpcModule<()>,
+    NetworkService,
 )>
 where
     DA: DaService,
-    DB: NodeLedgerOps + Send + Sync + Clone + 'static,
     Vm: ZkvmHost + Zkvm,
 {
     let rpc_context = rpc::create_rpc_context(ledger_db.clone());
@@ -227,6 +233,10 @@ where
     });
 
     let include_tx_bodies = runner_config.include_tx_body;
+
+    let (network_request_tx, network_request_rx) = mpsc::channel(100);
+    let (l2_syncer_tx, l2_syncer_rx) = mpsc::channel(100);
+
     let l2_syncer = L2Syncer::new(
         runner_config,
         init_params,
@@ -239,11 +249,14 @@ where
         l2_block_tx,
         backup_manager.clone(),
         include_tx_bodies,
+        l2_syncer_rx,
+        network_request_tx,
+        network_globals.clone(),
     )?;
 
     let l1_block_handler = L1BlockHandler::new(
         network,
-        ledger_db,
+        ledger_db.clone(),
         da_service,
         public_keys.sequencer_da_pub_key,
         public_keys.prover_da_pub_key,
@@ -252,5 +265,19 @@ where
         backup_manager,
     );
 
-    Ok((l2_syncer, l1_block_handler, pruner, rpc_module))
+    let citrea_network = NetworkService::build(
+        network_config,
+        network_globals,
+        ledger_db,
+        network_request_rx,
+        Some(l2_syncer_tx),
+        include_tx_bodies,
+    )?;
+    Ok((
+        l2_syncer,
+        l1_block_handler,
+        pruner,
+        rpc_module,
+        citrea_network,
+    ))
 }

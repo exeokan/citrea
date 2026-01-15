@@ -14,6 +14,7 @@ use citrea_fullnode::da_block_handler::L1BlockHandler as FullNodeL1BlockHandler;
 use citrea_fullnode::L2Syncer as FullNodeL2Syncer;
 use citrea_light_client_prover::circuit::initial_values::InitialValueProvider;
 use citrea_light_client_prover::da_block_handler::L1BlockHandler as LightClientProverL1BlockHandler;
+use citrea_network::{NetworkGlobals, NetworkService};
 use citrea_primitives::forks::get_forks;
 use citrea_sequencer::CitreaSequencer;
 use citrea_stf::runtime::{CitreaRuntime, DefaultContext};
@@ -207,7 +208,12 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
         rpc_module: RpcModule<()>,
         backup_manager: Arc<BackupManager>,
         task_executor: TaskExecutor,
-    ) -> Result<(CitreaSequencer<Self::DaService>, RpcModule<()>)> {
+        network_globals: Arc<NetworkGlobals>,
+    ) -> Result<(
+        CitreaSequencer<Self::DaService>,
+        RpcModule<()>,
+        NetworkService,
+    )> {
         let current_l2_height = ledger_db
             .get_head_l2_block()
             .map_err(|e| anyhow!("Failed to get head l2 block: {}", e))?
@@ -223,6 +229,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
 
         citrea_sequencer::build_services(
             sequencer_config,
+            rollup_config.network.clone(),
             init_params,
             native_stf,
             rollup_config.public_keys,
@@ -234,6 +241,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
             rpc_module,
             backup_manager,
             task_executor,
+            network_globals,
         )
     }
 
@@ -251,11 +259,13 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
         l2_block_tx: broadcast::Sender<u64>,
         rpc_module: RpcModule<()>,
         backup_manager: Arc<BackupManager>,
+        network_globals: Arc<NetworkGlobals>
     ) -> Result<(
         FullNodeL2Syncer<Self::DaService, LedgerDB>,
         FullNodeL1BlockHandler<Self::Vm, Self::DaService, LedgerDB>,
         Option<PrunerService>,
         RpcModule<()>,
+        NetworkService,
     )> {
         let runner_config = rollup_config.runner.expect("Runner config is missing");
 
@@ -275,10 +285,12 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
         fork_manager.register_handler(Box::new(ledger_db.clone()));
 
         let code_commitments = self.get_batch_proof_code_commitments();
+        let network_config = rollup_config.network.clone();
 
         citrea_fullnode::build_services(
             network,
             runner_config,
+            network_config,
             init_params,
             native_stf,
             rollup_config.public_keys,
@@ -290,6 +302,7 @@ pub trait CitreaRollupBlueprint: RollupBlueprint {
             code_commitments,
             rpc_module,
             backup_manager,
+            network_globals,
         )
     }
 
