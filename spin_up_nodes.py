@@ -392,6 +392,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Target peer count for nodes (passed as TARGET_PEER_COUNT environment variable).",
     )
+    parser.add_argument(
+        "--stagger-seconds",
+        type=float,
+        default=0.0,
+        help="Seconds to wait between starting each node (default: 0 for simultaneous start).",
+    )
     return parser.parse_args()
 
 
@@ -539,6 +545,33 @@ async def run_node_task(
             enr_futures[spec.name].set_exception(exc)
         stop_event.set()
         raise
+
+
+async def run_node_task_with_delay(
+    start_delay: float,
+    spec: NodeSpec,
+    runtime: NodeRuntime,
+    script_path: Path,
+    base_env: Dict[str, str],
+    runtime_map: Dict[str, NodeRuntime],
+    args: argparse.Namespace,
+    enr_futures: Dict[str, asyncio.Future],
+    stop_event: asyncio.Event,
+    log_dir: Path,
+) -> NodeHandle:
+    if start_delay > 0:
+        await asyncio.sleep(start_delay)
+    return await run_node_task(
+        spec,
+        runtime,
+        script_path,
+        base_env,
+        runtime_map,
+        args,
+        enr_futures,
+        stop_event,
+        log_dir,
+    )
 
 
 class ConnectivityWatcher:
@@ -705,22 +738,28 @@ async def main_async(args: argparse.Namespace) -> None:
     enr_futures: Dict[str, asyncio.Future] = {spec.name: loop.create_future() for spec in topology}
 
     try:
-        node_tasks = [
-            asyncio.create_task(
-                run_node_task(
-                    spec,
-                    runtime_map[spec.name],
-                    script_path,
-                    base_env,
-                    runtime_map,
-                    args,
-                    enr_futures,
-                    stop_event,
-                    log_dir,
+        if args.stagger_seconds > 0:
+            print(f"[config] Staggering node startup by {args.stagger_seconds} seconds per node.")
+
+        node_tasks = []
+        for index, spec in enumerate(topology):
+            delay = args.stagger_seconds * index if args.stagger_seconds else 0.0
+            node_tasks.append(
+                asyncio.create_task(
+                    run_node_task_with_delay(
+                        delay,
+                        spec,
+                        runtime_map[spec.name],
+                        script_path,
+                        base_env,
+                        runtime_map,
+                        args,
+                        enr_futures,
+                        stop_event,
+                        log_dir,
+                    )
                 )
             )
-            for spec in topology
-        ]
 
         handles = await asyncio.gather(*node_tasks)
         for handle in handles:
