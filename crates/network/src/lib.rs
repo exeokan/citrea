@@ -1,23 +1,37 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use citrea_common::NetworkConfig;
+use discv5::enr::CombinedKey;
+use discv5::Event as Discv5Event;
+use futures::future::Either;
 use futures::stream::StreamExt;
 use gossipsub::Message as GossipsubMessage;
 use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{
-    gossipsub, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+    gossipsub, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use sov_rollup_interface::rpc::block::L2BlockResponse;
+use std::sync::mpsc as std_mpsc;
+use tokio::{
+    runtime::Handle,
+    select,
+    sync::mpsc,
+};
+use tracing::{error, info, warn};
 use tokio::sync::RwLock;
-use tracing::{error, info};
 
+mod discovery;
+use self::discovery::{
+    enr_multiaddrs, enr_peer_id, prepare_identity, start_service, DiscoveryComponents,
+    DiscoveryService,
+};
+use crate::types::{Eth2Request, Eth2Response, NetworkEvent};
 use crate::config::build_gossipsub_config;
 use crate::peer_manager::{HeartbeatResult, PeerManager, ReportPeerResult};
-use crate::types::{Eth2Request, Eth2Response, NetworkEvent, PeerAction, SCORE_HALFLIFE};
 
 mod config;
 mod peer_manager;
@@ -27,6 +41,8 @@ pub mod types;
 
 pub use service::NetworkService;
 pub use types::{NetworkRequest, PeerInfo, PeerStatus};
+
+use crate::types::{PeerAction, SCORE_HALFLIFE};
 
 #[derive(Default)]
 pub struct NetworkGlobals {
@@ -45,7 +61,6 @@ impl NetworkGlobals {
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
-    mdns: mdns::tokio::Behaviour,
     eth2_rpc: rpc::Eth2Behaviour,
 }
 
@@ -54,6 +69,9 @@ struct Network {
     peer_manager: PeerManager,
     pending_inbound_requests: HashMap<InboundRequestId, ResponseChannel<Eth2Response>>,
     pending_outbound_requests: HashMap<OutboundRequestId, Eth2Request>,
+    discovery: Option<Arc<DiscoveryService>>,
+    discovery_events: Option<mpsc::Receiver<Discv5Event>>,
+    discovery_advertised_ip: Option<IpAddr>,
     connection_id_by_peer_id: HashMap<PeerId, Vec<ConnectionId>>,
     discovery_enabled: bool,
 }
@@ -65,11 +83,12 @@ impl Network {
             gossipsub_config,
             target_peers,
             discovery_enabled,
-            tcp_port,
-            udp_port,
+            discovery: discovery_config,
         } = network_config;
 
-        let mut swarm = SwarmBuilder::with_new_identity()
+        let (identity_keypair, discovery_key) = prepare_identity(&discovery_config)?;
+
+        let mut swarm = SwarmBuilder::with_existing_identity(identity_keypair)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -84,14 +103,8 @@ impl Network {
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     build_gossipsub_config(&gossipsub_config)?,
                 )?;
-                let mdns = mdns::tokio::Behaviour::new(
-                    mdns::Config::default(),
-                    key.public().to_peer_id(),
-                )?;
-
                 Ok(MyBehaviour {
                     gossipsub,
-                    mdns,
                     eth2_rpc: rpc::create_eth2_behaviour(),
                 })
             })?
@@ -107,9 +120,11 @@ impl Network {
         let topic = gossipsub::IdentTopic::new("new-head");
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
+        let discovery_advertised_ip = discovery_config.enr_address;
+
         // Listen on all interfaces
-        let tcp_port = tcp_port.unwrap_or(0);
-        let udp_port = udp_port.unwrap_or(0);
+        let tcp_port = discovery_config.enr_tcp_port.unwrap_or(0);
+        let udp_port = discovery_config.enr_udp_port.unwrap_or(0);
         let udp_addr = format!("/ip4/0.0.0.0/udp/{udp_port}/quic-v1");
         let tcp_addr = format!("/ip4/0.0.0.0/tcp/{tcp_port}");
 
@@ -125,12 +140,45 @@ impl Network {
             }
         }
 
-        let peer_manager = PeerManager::new(network_globals.clone(), target_peers, SCORE_HALFLIFE);
+
+        let (discovery, discovery_events) = if let Some(enr_key) = discovery_key {
+            let handle = Handle::try_current()
+                .map_err(|_| anyhow!("Tokio runtime is required for discv5 discovery"))?;
+            let (tx, rx) = std_mpsc::channel();
+            let discovery_config_clone = discovery_config.clone();
+            handle.spawn(async move {
+                let result = start_service(&discovery_config_clone, enr_key).await;
+                let _ = tx.send(result);
+            });
+            let DiscoveryComponents {
+                service,
+                event_rx,
+                local_enr,
+            } = rx
+                .recv()
+                .map_err(|_| anyhow!("Failed to start discv5 service: channel closed"))??;
+            
+            // Log the local ENR so users can copy it for bootstrapping other nodes
+            info!("🔍 Local discv5 ENR (use this as bootnode for other nodes): {}", local_enr.to_base64());
+
+            (Some(Arc::new(service)), Some(event_rx))
+        } else {
+            (None, None)
+        };
+
+        let peer_manager = PeerManager::new(
+            network_globals.clone(),
+            target_peers,
+            SCORE_HALFLIFE,
+        );
         Ok(Self {
             swarm,
             peer_manager,
             pending_inbound_requests: HashMap::new(),
             pending_outbound_requests: HashMap::new(),
+            discovery,
+            discovery_events,
+            discovery_advertised_ip,
             connection_id_by_peer_id: HashMap::new(),
             discovery_enabled,
         })
@@ -138,50 +186,185 @@ impl Network {
 
     pub async fn next_event(&mut self) -> Result<NetworkEvent> {
         loop {
-            match self.swarm.select_next_some().await {
-                SwarmEvent::Behaviour(event) => {
-                    let network_event = match event {
-                        MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
-                        MyBehaviourEvent::Mdns(event) => self.on_mdns_event(event).await,
-                        MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
-                    };
-                    if let Some(event) = network_event {
-                        return Ok(event);
+            if let Some(discovery_rx) = self.discovery_events.as_mut() {
+                select! {
+                    swarm_event = self.swarm.select_next_some() => {
+                        if let Some(event) = self.handle_swarm_event(swarm_event).await {
+                            return Ok(event);
+                        }
                     }
-                }
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    info!("Local node is listening on {address}");
-                }
-                SwarmEvent::ConnectionEstablished {
-                    peer_id,
-                    connection_id,
-                    ..
-                } => {
-                    info!("Connection established with peer {peer_id} (connection id: {connection_id})");
-                    self.connection_id_by_peer_id
-                        .entry(peer_id)
-                        .or_default()
-                        .push(connection_id);
-                    self.peer_manager.connected_peer(&peer_id).await;
-                }
-                SwarmEvent::ConnectionClosed {
-                    peer_id,
-                    connection_id,
-                    ..
-                } => {
-                    info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
-                    if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
-                        connections.retain(|&id| id != connection_id);
-                        if connections.is_empty() {
-                            self.connection_id_by_peer_id.remove(&peer_id);
-                            self.peer_manager.disconnected_peer(&peer_id).await;
+                    discovery_event = discovery_rx.recv() => {
+                        match discovery_event {
+                            Some(event) => {
+                                if let Some(network_event) = self.handle_discovery_event(event).await {
+                                    return Ok(network_event);
+                                }
+                            }
+                            None => {
+                                // Discovery channel closed; stop polling it to avoid busy loops.
+                                self.discovery_events = None;
+                            }
                         }
                     }
                 }
-                _ => {}
+            } else {
+                let swarm_event = self.swarm.select_next_some().await;
+                if let Some(event) = self.handle_swarm_event(swarm_event).await {
+                    return Ok(event);
+                }
             }
         }
     }
+
+    async fn handle_swarm_event(
+        &mut self,
+        event: SwarmEvent<MyBehaviourEvent>,
+    ) -> Option<NetworkEvent> {
+        match event {
+            SwarmEvent::Behaviour(event) => {
+                let network_event = match event {
+                    MyBehaviourEvent::Eth2Rpc(event) => self.on_eth2_rpc_event(event).await,
+                    MyBehaviourEvent::Gossipsub(event) => self.on_gossipsub_event(event).await,
+                };
+                if let Some(event) = network_event {
+                    return Some(event);
+                }
+            }
+            SwarmEvent::NewListenAddr { address, .. } => {
+                if let Some(discovery) = &self.discovery {
+                    if let Some((socket, is_tcp)) = discovery::multiaddr_to_socket(&address) {
+                        if is_tcp {
+                            // Avoid overwriting the discv5 UDP port with libp2p QUIC.
+                            let socket =
+                                if let Some(advertised_ip) = self.discovery_advertised_ip {
+                                    SocketAddr::new(advertised_ip, socket.port())
+                                } else {
+                                    socket
+                                };
+                            if !socket.ip().is_unspecified() {
+                                discovery.update_socket(socket, true);
+                            }
+                        }
+                    }
+                }
+                info!("Local node is listening on {address}");
+            }
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                info!("Connection established with peer {peer_id} (connection id: {connection_id})");
+                self.connection_id_by_peer_id
+                    .entry(peer_id)
+                    .or_default()
+                    .push(connection_id);
+                self.peer_manager.connected_peer(&peer_id).await;
+            }
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                info!("Connection closed with peer {peer_id} (connection id: {connection_id})");
+                if let Some(connections) = self.connection_id_by_peer_id.get_mut(&peer_id) {
+                    connections.retain(|&id| id != connection_id);
+                    if connections.is_empty() {
+                        self.connection_id_by_peer_id.remove(&peer_id);
+                        self.peer_manager.disconnected_peer(&peer_id).await;
+                        if self.peer_manager.needs_more_peers().await {
+                            self.spawn_discovery_lookup();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    async fn handle_discovery_event(&mut self, event: Discv5Event) -> Option<NetworkEvent> {
+        match event {
+            Discv5Event::Discovered(enr) => self.handle_discovered_enr(enr).await,
+            Discv5Event::SessionEstablished(enr, _) => self.handle_discovered_enr(enr).await,
+            Discv5Event::NodeInserted { node_id, .. } => {
+                info!("discv5 inserted node {node_id}");
+                None
+            }
+            Discv5Event::SocketUpdated(addr) => {
+                info!("discv5 updated external socket to {addr}");
+                None
+            }
+            Discv5Event::UnverifiableEnr { node_id, .. } => {
+                warn!("Received unverifiable ENR for node {node_id}");
+                None
+            }
+            Discv5Event::TalkRequest(_) => None,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn spawn_discovery_lookup(&self) {
+        let Some(discovery) = self.discovery.clone() else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            if let Err(err) = discovery.random_lookup().await {
+                warn!("discv5 random lookup failed: {err:?}");
+            }
+        });
+    }
+
+    async fn handle_discovered_enr(
+        &mut self,
+        enr: discv5::enr::Enr<CombinedKey>,
+    ) -> Option<NetworkEvent> {
+        if !self.discovery_enabled {
+            return None;
+        }
+        let peer_id = enr_peer_id(&enr)?;
+        let should_dial = self.peer_manager.should_dial_peer(peer_id).await;
+        if !should_dial {
+            if self.peer_manager.needs_more_peers().await {
+                self.spawn_discovery_lookup();
+            }
+            return None;
+        }
+
+        let node_id = enr.node_id();
+        let addresses = enr_multiaddrs(&enr);
+        if addresses.is_empty() {
+            warn!(
+                "discv5 discovered peer {} (node {:?}) without reachable multiaddrs",
+                peer_id, node_id
+            );
+        } else {
+            let addrs = addresses
+                .iter()
+                .map(|addr| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            info!(
+                "discv5 discovered peer {} (node {:?}) at {addrs}",
+                peer_id, node_id
+            );
+        }
+        for addr in addresses {
+            match self.swarm.dial(addr.clone()) {
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Failed to dial peer {peer_id} via {addr}: {err:?}");
+                }
+            }
+        }
+        if self.peer_manager.needs_more_peers().await {
+            self.spawn_discovery_lookup();
+        }
+        None
+    }
+
 
     pub fn send_rpc_request(&mut self, peer_id: PeerId, request: Eth2Request) {
         let request_id = self
@@ -227,29 +410,6 @@ impl Network {
         {
             error!("Failed to publish message: {:?}", e);
         }
-    }
-
-    async fn on_mdns_event(&mut self, event: mdns::Event) -> Option<NetworkEvent> {
-        match event {
-            mdns::Event::Discovered(list) => {
-                if !self.discovery_enabled {
-                    return None;
-                }
-                tracing::debug!("mDNS discovered {} new peers", list.len());
-                for (peer_id, multiaddr) in list {
-                    if !self.peer_manager.should_dial_peer(peer_id).await {
-                        continue;
-                    }
-                    if let Err(e) = self.swarm.dial(multiaddr.clone()) {
-                        error!("Failed to dial discovered peer {peer_id} at {multiaddr}: {e}");
-                    } else {
-                        info!("Dialed discovered peer {peer_id} at {multiaddr}");
-                    }
-                }
-            }
-            mdns::Event::Expired(_) => {}
-        }
-        None
     }
 
     async fn on_gossipsub_event(&mut self, event: gossipsub::Event) -> Option<NetworkEvent> {

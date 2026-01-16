@@ -6,7 +6,7 @@ use citrea_primitives::PRE_TANGERINE_BRIDGE_INITIALIZE_PARAMS;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub use crate::config::network::{GossipsubConfig, NetworkConfig};
+pub use crate::config::network::{GossipsubConfig, NetworkConfig, DiscoveryConfig};
 pub use crate::config::rpc::RpcConfig;
 use crate::utils::read_env;
 
@@ -495,6 +495,7 @@ impl Default for PruningConfig {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::path::Path;
 
     use tempfile::NamedTempFile;
 
@@ -505,6 +506,43 @@ mod tests {
         let mut config_file = NamedTempFile::new().unwrap();
         config_file.write_all(content.as_bytes()).unwrap();
         config_file
+    }
+
+    #[test]
+    fn test_discovery_config_from_env_overrides() {
+        std::env::set_var("NETWORK_DISCOVERY_ENABLED", "false");
+        std::env::set_var("NETWORK_DISCOVERY_BIND_ADDR", "127.0.0.1:9200");
+        std::env::set_var("NETWORK_DISCOVERY_ENR_ADDRESS", "1.1.1.1");
+        std::env::set_var("NETWORK_DISCOVERY_ENR_UDP_PORT", "9200");
+        std::env::set_var("NETWORK_DISCOVERY_ENR_TCP_PORT", "9300");
+        std::env::set_var("NETWORK_DISCOVERY_KEY_PATH", "/tmp/discv5.key");
+        std::env::set_var(
+            "NETWORK_DISCOVERY_BOOTNODES",
+            "enr:-IS4QJx1,enr:-Kj4abcd  ,",
+        );
+
+        let config = DiscoveryConfig::from_env().unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.udp_bind, "127.0.0.1:9200".parse().unwrap());
+        assert_eq!(config.enr_address, Some("1.1.1.1".parse().unwrap()));
+        assert_eq!(config.enr_udp_port, Some(9200));
+        assert_eq!(config.enr_tcp_port, Some(9300));
+        assert_eq!(
+            config.private_key_path.as_deref(),
+            Some(Path::new("/tmp/discv5.key"))
+        );
+        assert_eq!(
+            config.bootnodes,
+            vec!["enr:-IS4QJx1".to_string(), "enr:-Kj4abcd".to_string()]
+        );
+
+        std::env::remove_var("NETWORK_DISCOVERY_ENABLED");
+        std::env::remove_var("NETWORK_DISCOVERY_BIND_ADDR");
+        std::env::remove_var("NETWORK_DISCOVERY_ENR_ADDRESS");
+        std::env::remove_var("NETWORK_DISCOVERY_ENR_UDP_PORT");
+        std::env::remove_var("NETWORK_DISCOVERY_ENR_TCP_PORT");
+        std::env::remove_var("NETWORK_DISCOVERY_KEY_PATH");
+        std::env::remove_var("NETWORK_DISCOVERY_BOOTNODES");
     }
 
     #[test]
@@ -816,6 +854,11 @@ mod tests {
 
     #[test]
     fn test_optional_telemetry_config_from_env() {
+        let original_host = std::env::var("TELEMETRY_BIND_HOST").ok();
+        let original_port = std::env::var("TELEMETRY_BIND_PORT").ok();
+        std::env::remove_var("TELEMETRY_BIND_HOST");
+        std::env::remove_var("TELEMETRY_BIND_PORT");
+
         let telemetry_config = TelemetryConfig::from_env().unwrap();
 
         let expected = TelemetryConfig {
@@ -833,5 +876,14 @@ mod tests {
             bind_port: Some(5000),
         };
         assert_eq!(telemetry_config, expected);
+
+        match original_host {
+            Some(value) => std::env::set_var("TELEMETRY_BIND_HOST", value),
+            None => std::env::remove_var("TELEMETRY_BIND_HOST"),
+        }
+        match original_port {
+            Some(value) => std::env::set_var("TELEMETRY_BIND_PORT", value),
+            None => std::env::remove_var("TELEMETRY_BIND_PORT"),
+        }
     }
 }

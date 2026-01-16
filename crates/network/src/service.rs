@@ -55,6 +55,9 @@ impl NetworkService {
     pub async fn run(mut self, mut shutdown_signal: GracefulShutdown) {
         let (response_tx, mut response_rx) = mpsc::channel(RPC_REQUESTS_CHANNEL_LIMIT);
         let mut pm_heartbeat = tokio::time::interval(PM_HEARTBEAT_INTERVAL);
+        if self.network.peer_manager.needs_more_peers().await {
+            self.network.spawn_discovery_lookup();
+        }
         loop {
             tokio::select! {
                 Some(request) = self.request_rx.recv() => self.on_network_request(request).await,
@@ -219,6 +222,7 @@ impl NetworkService {
             HeartbeatResult::WantedPeers(wanted) => {
                 // P2P-TODO: request from discovery
                 info!("PeerManager requests {} more peers", wanted);
+                self.network.spawn_discovery_lookup();
             }
             HeartbeatResult::ExcessPeers(excess_peers) => {
                 info!(

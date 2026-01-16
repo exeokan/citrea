@@ -1,0 +1,21 @@
+[
+  {
+    "name": "node1",
+    "type": "sequencer",
+    "bootnodes": []
+  },
+  {
+    "name": "node2",
+    "type": "full_node",
+    "bootnodes": [
+      "node1"
+    ]
+  },
+  {
+    "name": "node3",
+    "type": "full_node",
+    "bootnodes": [
+      "node2"
+    ]
+  }
+]

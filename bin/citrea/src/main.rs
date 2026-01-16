@@ -208,10 +208,14 @@ where
 
     let (l2_block_tx, l2_block_rx) = l2_block_channel;
 
-    let sequencer_client_url = rollup_config
-        .runner
-        .clone()
-        .map(|runner| runner.sequencer_client_url);
+    let sequencer_client_url = match node_type {
+        // Sequencer serves tx submission locally; treat it as having no external client URL
+        NodeWithConfig::Sequencer(_) => None,
+        _ => rollup_config
+            .runner
+            .clone()
+            .map(|runner| runner.sequencer_client_url),
+    };
     let l2_block_rx = match node_type {
         NodeWithConfig::Sequencer(_)
         | NodeWithConfig::BatchProver(_)
